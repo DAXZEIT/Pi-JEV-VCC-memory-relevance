@@ -1,124 +1,309 @@
 # Pi-JEV-VCC-memory-relevance
 
-**Logit-scored memory relevance for the pi coding agent.** Your agent keeps a
-folder of long-term memory files (`~/.pi/agent/memory/*.md`). This extension
-scores, at the right moments, how relevant each file is to what is happening
-*right now* — using a calibrated yes/no classifier that reads **native logits**
-(P("Yes")), not embeddings — and hands the agent a graduated ranking.
+**A lightweight memory relevance scorer for the Pi coding agent.**
 
-The scores are a **prior, not a verdict**: the agent decides what to read.
-Nothing is ever injected.
+Long-running agents accumulate memory. The hard part is not storing it — it's knowing
+which parts might matter *right now*.
 
+This extension uses a small local classifier to score the relevance of each memory
+block against the agent's current context.
+
+It does **not** retrieve or inject memories automatically.
+
+It simply gives the agent a ranked hint about where to look.
+
+---
+
+## The idea
+
+Pi already keeps long-term memory as Markdown files:
+
+```text
+~/.pi/agent/memory/*.md
 ```
+
+This extension keeps a lightweight index of those files and asks a local
+yes/no classifier, using **native token logits**, how useful each memory would
+be for continuing the current task.
+
+The result looks like this:
+
+```text
 <memory_relevance>
-Potentially useful memories for the current task (local relevance scores,
-informational only — 0.000-0.001 is the noise floor, skip those; anything
-above is a hint you can verify by reading, weighted by score, not a verdict):
-deploy-runbook.md: 0.998
-project-foo-status.md: 0.205
-user-preferences.md: 0.153
+jev-typesafe.md:      0.985
+pi-reload-self.md:    0.708
+pi-ask-parent.md:     0.479
+user-profile.md:      0.093
+moltbook.md:          0.043
 </memory_relevance>
 ```
 
-## Why logit scoring instead of embeddings
+The scores are a **prior, not a verdict**.
 
-- **A probability is a prior.** P(Yes) = 0.06 means something concrete: "this
-  is probably noise — but verify by reading if it's cheap". Cosine similarity
-  has no calibrated semantics; nobody knows what 0.63 "means".
-- **The gradient is the product.** With ~25 memories you don't want a
-  top-1 — you want to *see* the shape of the ranking: cliffs, plateaus, and a
-  visible noise floor around 0.000–0.001 that teaches itself where to cut.
-- **You can calibrate it.** Because the output is a probability, a
-  confidence→error curve can be measured (ours is monotone), thresholds can be
-  set per task, and two different backends can be compared quantitatively.
+The agent still decides what to read.
 
-## The three triggers
+Nothing is automatically injected.
 
-| Trigger | Hook | When | Output |
-|---|---|---|---|
-| **Cold start** | `before_agent_start` | First real user prompt of the session, *before* the first LLM call (synchronous, ~15-20 s) | top-10 block in the very first prefill |
-| **Post-compaction** | `session_compact` | pi-vcc's compaction summary, synchronously-blocking the resume (~15-20 s) | top-10 block in the first post-compaction prefill |
-| **On-demand** | `memory_relevance` tool | Mid-task, when the agent suspects a memory holds needed context | FULL ranking as the tool result |
+---
 
-The two pushes exist because the agent cannot know what it is missing at
-startup or after a context wipe. The pull exists because a state-driven
-trigger cannot see a question the agent only formulates mid-task. Failure at
-any point = skip + log line (`~/.cache/jev-relevance/log.jsonl`) — the
-session is never blocked and the agent falls back to its static index.
+## Why logits?
 
-## Reading hygiene (baked into the output)
+This started from an experiment with JEV-style classification on a local Qwen 3.8 27B.
 
-- `0.000–0.001` — noise floor. Skip.
-- Anything above — a **hint you can verify by reading**, weighted by score,
-  not a verdict. A mid-gradient cliff is *not* a truth boundary: a 0.06 file
-  can be exactly the right pointer in a broader sweep.
-- Verify by reading. A read costs nothing; the score orients, the content
-  decides.
+Instead of embeddings, the scorer reads the model's native probability for
+a yes/no decision:
 
-## Install
+> **"For continuing the current task correctly from this context, how useful would it be to consult this memory block?"**
 
-```bash
-# 1. scorer — either the bundled reference scorer against any
-#    OpenAI-compatible endpoint with logprobs (llama-server, vLLM, …):
-chmod +x scripts/scorer-openai.py
-#    (point JEV_CMD at it), or any CLI implementing docs/scorer-contract.md.
+That gives a graded ranking rather than a single nearest-neighbour result.
 
-# 2. memory index — build it from your memory dir and review the descriptions:
-python3 scripts/build-index.py --dir ~/.pi/agent/memory \
-    --out ~/.pi/agent/memory_index.json --exclude error_log.md
-#    (exclude append-only hypothesis/incident logs — only durable-fact
-#    memories belong in the ranking)
+A score of `0.98` says "look here first".
 
-# 3. extension — symlink into the pi agent dir:
-ln -s "$PWD/jev-relevance.ts" ~/.pi/agent/extensions/jev-relevance.ts
+A score of `0.26` does **not** mean "irrelevant".
+
+It simply means "much weaker signal than the memories above it".
+
+That lower part of the ranking is still useful: weak links can point the agent
+toward adjacent context it would not otherwise consider.
+
+---
+
+## How it works
+
+```text
+                    Current context
+                           │
+                           ▼
+                         Pi-VCC
+                           │
+                           ▼
+                    context snapshot
+                           │
+                           ▼
+                     local classifier
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+          memory A      memory B      memory C
+            0.98          0.71          0.04
+             │             │             │
+             └─────────────┴─────────────┘
+                           │
+                           ▼
+                    ranked memory hints
+                           │
+                           ▼
+                       Pi agent
+                           │
+                    read / ignore
 ```
 
-Optional env overrides: `JEV_CMD` (scorer binary), `JEV_MEMORY_INDEX`
-(index JSON path).
+There is deliberately no LLM in the middle:
 
-Requirements: the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
-(`~/.pi/agent/extensions/*.ts` auto-load), Node ≥ 20, a running
-OpenAI-compatible completions endpoint for the reference scorer.
+```text
+VCC → scorer → ranking
+```
 
-## Costs
+Pi-VCC already provides the current task context. The scorer only ranks the
+existing memory index against it.
 
-~15-20 s per scoring (25 parallel single-token completions against a local
-small model, ~1000 tok total), zero egress. Two pushes per session maximum
-(one cold start, one per compaction) plus ≤1 on-demand call per task by
-contract. The output block costs ~100 tokens in context.
+---
 
-## Validation status (measured on the reference setup)
+## When scoring happens
 
-- ANLI 1000-line bench: hosted typed classifier 3-way **0.79**, local 8-bit
-  model **0.71**; isotonic recalibration reaches parity in-sample.
-- **FEVER out-of-sample: parity does NOT transfer** (all arms ~0.52 vs 0.79) —
-  thresholds are per-task; calibration does not cross task families. This is
-  documented, not hidden.
-- The local backend stays usable as a prior: confidence→error curve monotone,
-  ranking correlation local↔hosted ~0.92 (same decision 92.4% of the time).
-- Shared-prefix KV anchoring: 24 branches in ~28 s instead of ~150 s.
+There are three entry points.
+
+| Trigger | When | What it does |
+|---|---|---|
+| **Cold start** | Before the first LLM call of a new session | Adds a small relevance hint to the first prompt |
+| **Post-compaction** | After a Pi-VCC compaction | Re-ranks memories against the rebuilt context |
+| **On demand** | `memory_relevance` tool call | Returns the full ranking when the agent explicitly asks |
+
+The automatic paths never force a memory read.
+
+If scoring fails, the session continues normally and Pi falls back to its
+static memory index.
+
+---
+
+## Why this is useful
+
+A normal memory system answers:
+
+> "What should I retrieve?"
+
+This one answers something slightly different:
+
+> **"Where might useful context be?"**
+
+That distinction matters because the main agent remains in control.
+
+A typical flow is:
+
+```text
+user request
+    ↓
+memory relevance scores
+    ↓
+agent notices:
+  "pi-vcc.md looks useful"
+    ↓
+read pi-vcc.md
+    ↓
+continue
+```
+
+The scorer does not know what the agent ultimately needs.
+It only makes the search surface easier to navigate.
+
+---
+
+## Memory index
+
+The index is intentionally small.
+
+Each entry contains an identifier, a path and a short description:
+
+```json
+{
+  "memories": [
+    {
+      "id": "jev-typesafe",
+      "path": "~/.pi/agent/memory/jev-typesafe.md",
+      "description": "JEV, classification, calibration and routing"
+    },
+    {
+      "id": "pi-vcc",
+      "path": "~/.pi/agent/memory/pi-vcc.md",
+      "description": "Pi-VCC compaction and context reconstruction"
+    }
+  ]
+}
+```
+
+The scorer receives the **description**, not the full memory file.
+
+Good descriptions matter.
+
+Garbage descriptions produce garbage priors.
+
+---
+
+## Performance
+
+The scorer runs locally and uses shared-prefix KV reuse between memory questions.
+
+On the reference setup:
+
+- ~25 memory blocks: **~15 seconds**
+- shared-prefix anchor: **~0.4 seconds**
+- 24-branch production-shaped run: **~22.7 seconds**, down from ~150 seconds
+
+The operation is intentionally limited to context boundaries and explicit
+on-demand use rather than running on every turn.
+
+---
+
+## What the experiments showed
+
+This project started from a simpler question:
+
+> Can a local Qwen 3.8 27B reproduce useful JEV-style decision signals?
+
+The answer was **yes**, but with an important caveat.
+
+A controlled ANLI experiment gave the hosted JEV setup about **0.79** 3-way
+accuracy and the local model about **0.71** at the initial operating point.
+Isotonic calibration could close that gap in-sample. On FEVER out-of-sample,
+that calibration did not transfer: all tested systems were around **0.52**.
+
+What did transfer was the useful part for this project:
+
+- local and hosted decisions agreed about **92%** of the time;
+- the local confidence signal remained useful for escalation;
+- the same model could therefore act as a cheap **relevance/routing signal**
+  without being a drop-in replacement for JEV itself.
+
+---
+
+## Installation
+
+### 1. Scorer
+
+Use the bundled reference scorer with any OpenAI-compatible endpoint exposing
+logprobs (for example `llama-server` or vLLM), or provide your own implementation
+following `docs/scorer-contract.md`.
+
+```bash
+chmod +x scripts/scorer-openai.py
+```
+
+### 2. Build the memory index
+
+```bash
+python3 scripts/build-index.py   --dir ~/.pi/agent/memory   --out ~/.pi/agent/memory_index.json
+```
+
+Review the generated descriptions before relying on them.
+
+### 3. Install the Pi extension
+
+```bash
+ln -s "$PWD/jev-relevance.ts"   ~/.pi/agent/extensions/jev-relevance.ts
+```
+
+Then reload Pi.
+
+---
+
+## Configuration
+
+Optional environment variables:
+
+```text
+JEV_CMD
+JEV_MEMORY_INDEX
+```
+
+The extension expects Pi's extension loader and a running OpenAI-compatible
+completion endpoint for the reference scorer.
+
+Requirements:
+
+- Pi coding agent
+- Node.js ≥ 20
+- local logit-capable scorer
+
+---
 
 ## Limitations
 
-- Scores orient retrieval; they do not replace reading. Treat them as a
-  search engine, not an oracle.
-- Quality of the ranking = quality of the `desc_en` descriptions in the
-  index. Garbage descriptions in, garbage priors out.
-- The protocol framings (`FRAMINGS` in the extension) are frozen wording —
-  they are the metric. Reword them only together with a re-measurement.
-- Post-compaction scoring is coupled to the `pi-vcc` compactor id; other
-  compactors are skipped (log `skip: not-pi-vcc`).
+This is a **memory navigation aid**, not a truth oracle.
 
-## Layout
+Scores should be interpreted as ranking signals and verified by reading the
+memory itself.
 
-```
-jev-relevance.ts            the extension (drop-in, ~400 lines, no deps)
-docs/scorer-contract.md     the scorer CLI contract + calibration notes
-scripts/scorer-openai.py    reference scorer (OpenAI-compatible logprobs)
-scripts/build-index.py      memory dir → index JSON
+The current experiments do not establish general retrieval quality across
+hundreds of unrelated sessions. The memory-ranking behaviour is still an
+active experiment.
+
+The wording of the scoring prompts is deliberately frozen; changing it means
+changing the measurement and should be followed by a re-evaluation.
+
+---
+
+## Files
+
+```text
+jev-relevance.ts            Pi extension
+docs/scorer-contract.md     scorer contract + calibration notes
+scripts/scorer-openai.py    reference scorer
+scripts/build-index.py      memory directory → index JSON
 examples/memory_index.example.json
 ```
 
+---
+
 ## License
 
-MIT — see LICENSE.
+MIT
