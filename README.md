@@ -14,6 +14,9 @@ It does **not** retrieve or inject memories automatically.
 
 It simply gives the agent a ranked hint about where to look.
 
+The scorer never reads your memory files. It only sees the memory IDs and
+descriptions in the index (see Memory index below).
+
 ---
 
 ## The idea
@@ -125,6 +128,21 @@ The automatic paths never force a memory read.
 
 If scoring fails, the session continues normally and Pi falls back to its
 static memory index.
+
+---
+
+## Privacy / data egress
+
+- **Default (local backend):** the scoring state — a snapshot of the current
+  context (prompt head, or the post-compaction summary) plus the memory index
+  descriptions — goes only to the local scorer endpoint
+  (`--server`, default `127.0.0.1`). No network egress, no third party.
+- **The extension itself never passes `--backend jev`** — it always scores
+  against the local endpoint.
+- **`--backend jev` (manual, optional):** sends the full state and questions
+  to OpenRouter / Jev. The state can contain project names, local paths,
+  work excerpts and conversation content — do not use it for confidential
+  sessions unless you accept that egress.
 
 ---
 
@@ -264,8 +282,9 @@ OpenAI-compatible endpoint exposing logprobs (`chmod +x` first), or point
 python3 scripts/build-index.py   --dir ~/.pi/agent/memory   --out ~/.pi/agent/memory_index.json
 ```
 
-Review the generated descriptions before relying on them (or curate them with
-`--index-file`, see Memory index above).
+**Do not skip index review. The scorer ranks *descriptions*, not memory
+contents** — garbage descriptions produce garbage priors (or curate them
+with `--index-file`, see Memory index above).
 
 ### 3. Install the Pi extension
 
@@ -289,6 +308,12 @@ JEV_MODEL          model name for the reference scorer
 OPENROUTER_API_KEY OpenRouter key for the jev skill's hosted backend
                    (fallback: Pi's auth store — see jev_key() in jev/jev)
 ```
+
+`JEV_CMD` is a **trusted-executable boundary**: the configured path is invoked
+directly (no shell) and is fully trusted — it receives the scoring state as a
+file argument and runs with your privileges. The extension validates it once
+at load (must be a regular, executable file) and skips scoring with a clear
+log entry otherwise.
 
 Requirements:
 

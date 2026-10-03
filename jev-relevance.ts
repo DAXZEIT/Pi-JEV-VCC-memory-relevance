@@ -46,18 +46,41 @@
  */
 import { execFile } from "node:child_process";
 import {
+  accessSync,
   appendFileSync,
+  constants,
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+type PiOn = { on?: (event: string, handler: (event?: any, ctx?: any) => unknown) => void };
+
 // Configuration. Override via environment; defaults match the conventional
 // pi agent dir layout (~/.pi/agent) and a scorer named `jev` on PATH.
+// Scorer CLI. JEV_CMD is a TRUSTED-EXECUTABLE boundary: it is invoked
+// directly (no shell) but the configured path is fully trusted — it receives
+// the scoring state (a snapshot of the current context) as a file argument
+// and runs with the user's privileges. Resolved and validated once at load.
 const JEV = process.env.JEV_CMD ?? path.join(os.homedir(), ".local", "bin", "jev");
+const jevUsable = (() => {
+  try {
+    if (!statSync(JEV).isFile()) return { ok: false, why: `not a regular file: ${JEV}` };
+    accessSync(JEV, constants.X_OK);
+    return { ok: true, why: "" };
+  } catch {
+    return {
+      ok: false,
+      why: process.env.JEV_CMD
+        ? `JEV_CMD not usable (${JEV}) — it must be a regular executable file`
+        : `scorer not found: ${JEV} — install the jev skill or set JEV_CMD`,
+    };
+  }
+})();
 const INDEX = process.env.JEV_MEMORY_INDEX ?? path.join(os.homedir(), ".pi", "agent", "memory_index.json");
 const DIR = path.join(os.homedir(), ".cache", "jev-relevance");
 const LOG = path.join(DIR, "log.jsonl");
@@ -126,6 +149,10 @@ const buildQuestions = (mems: MemoryEntry[], framing: Framing): Record<string, u
 const runJev = (state: string, mems: MemoryEntry[], framing: Framing, timeoutS: number): Promise<{ rows: Array<{ id: string; path: string; score: number }>; wallS: number; anchor?: unknown }> =>
   new Promise((resolve, reject) => {
     const t0 = Date.now();
+    if (!jevUsable.ok) {
+      reject(new Error(`scorer unavailable: ${jevUsable.why}`));
+      return;
+    }
     try {
       writeFileSync(STATE_F, JSON.stringify(state));
       writeFileSync(QUESTIONS_F, JSON.stringify(buildQuestions(mems, framing), null, 1));
@@ -216,7 +243,7 @@ export default (pi: unknown): void => {
   // SYNCHRONOUS by design: the initial prefill must contain the hint.
   // Failure = silence, never a block.
   const coldDone = new Set<string>();
-  pi.on?.("before_agent_start", async (event: any, ctx: any) => {
+  (pi as PiOn).on?.("before_agent_start", async (event: any, ctx: any) => {
     const prompt: string = event?.prompt ?? "";
     if (prompt.length < COLD_MIN_PROMPT_CHARS || prompt.startsWith("/")) return;
     let sessionFile = "unknown";
@@ -273,7 +300,7 @@ export default (pi: unknown): void => {
   // poll → first post-compaction prefill, like cold start). The TUI is not
   // silent while waiting: setStatus. Failure = skip + log, the agent resumes
   // without the hint.
-  pi.on?.("session_compact", async (event: any, ctx: any) => {
+  (pi as PiOn).on?.("session_compact", async (event: any, ctx: any) => {
     const status = (text: string | undefined): void => {
       try {
         ctx?.ui?.setStatus?.("jev-relevance", text);

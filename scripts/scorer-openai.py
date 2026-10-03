@@ -69,7 +69,10 @@ def score_one(endpoint: str, model: str, api_key: str | None, prompt: str,
     p_yes = max([l for t, l in top.items() if t in YES_VARIANTS], default=None)
     p_no = max([l for t, l in top.items() if t in NO_VARIANTS], default=None)
     if p_yes is None or p_no is None:
-        # fall back to the sampled token itself
+        # fall back to the sampled token itself.
+        # RECOVERY HEURISTIC, NOT CALIBRATION: the fake opposite logprob of -20.0
+        # saturates the probability to ~1.0/~0.0 and must not be read as a
+        # calibrated value — a proper scorer exposes both polarity logits in top_logprobs.
         if toks[0] in YES_VARIANTS:
             p_yes, p_no = lps[0], -20.0
         elif toks[0] in NO_VARIANTS:

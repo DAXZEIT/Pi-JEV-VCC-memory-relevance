@@ -10,7 +10,7 @@ sont locaux.
 
 Subcommandes :
   ask       score un state + questions (local ou Jev)
-  selftest  régression 6 branches canaris vs références Jev (attend 6/6)
+  selftest  6/6 directional canaries (DIRECTION only — pas une validation de calibration ni OOD)
   check     santé serveur + fraicheur du template vs GGUF
 
 Sortie : UN objet JSON sur stdout. Codes de sortie : 0 ok · 1 erreur dure
@@ -255,6 +255,9 @@ def cmd_ask(args):
     else:
         die("--state FILE ou --state-stdin requis", 1)
     questions = json.loads(Path(args.questions).read_text(encoding="utf-8"))
+    if args.dump_prompt and len(questions) != 1:
+        die(f"--dump-prompt : {len(questions)} questions — un dump = UN prompt "
+            "(passez 1 question ou retirez --dump-prompt)", 1)
 
     deadline = Deadline(args.timeout)
     try:
@@ -345,7 +348,10 @@ def cmd_selftest(args):
     except (RuntimeError, ValueError) as e:
         die(e, 1)
     json.dump({"ok": ok_dir == len(rows), "backend": "local", "server": args.server,
-               "direction_ok": f"{ok_dir}/{len(rows)}", "rows": rows}, sys.stdout)
+               "direction_ok": f"{ok_dir}/{len(rows)}",
+               "note": "directional canaries only — validates protocol direction on the "
+                       "bundled canaries; it does NOT validate calibration or general accuracy",
+               "rows": rows}, sys.stdout)
     print()
     sys.exit(0 if ok_dir == len(rows) else 1)
 
@@ -490,10 +496,10 @@ def main():
     pa.add_argument("--model", default=None, help="nom du modèle (informatif)")
     pa.add_argument("--timeout", type=float, default=None,
                     help="budget total en s (défaut 120 local / 60 jev — queue 180-270 s : le timeout est la garde)")
-    pa.add_argument("--dump-prompt", default=None, help="écrire le texte rendu en clair dans ce fichier (debug, dangereux pour le contexte)")
+    pa.add_argument("--dump-prompt", default=None, help="écrire le texte rendu en clair dans ce fichier (debug, dangereux pour le contexte) — une seule question par dump")
     pa.set_defaults(fn=cmd_ask)
 
-    ps = sub.add_parser("selftest", help="régression 6 branches canaris (attend 6/6)")
+    ps = sub.add_parser("selftest", help="6/6 directional canaries (direction only, pas de calibration)")
     ps.add_argument("--server", default=DEFAULT_SERVER)
     ps.add_argument("--timeout", type=float, default=180.0)
     ps.set_defaults(fn=cmd_selftest)
