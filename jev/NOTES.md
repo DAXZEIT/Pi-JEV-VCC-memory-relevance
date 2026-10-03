@@ -10,16 +10,29 @@
    Le champ `noul` est un **scalaire = p(true)** (vérifié : les 6 références
    canaris sont sémantiquement cohérentes avec p(true) — ex.
    C|independent=0.06 sur un state qui est un self-review). Latence 0,7 s
-   typique, **queue intermittente 180-270 s** (timeout+retry upstream ~180 s,
-   capacité « demand très élevée »). Coût mesuré : ~$0,00002/call.
+   typique. **Queue 180-270 s documentée le 28/09** (timeout+retry upstream
+   ~180 s, capacité « demand très élevée », pattern 0,71→180,6×4→269→272→0,76)
+   — **non reproduite depuis** (30/09 : bench 2×1000 appels en 0,8-1,1 s ;
+   03/10 : 22 appels en 0,39-1,33 s) → à traiter comme événement rare
+   (tail insurance du timeout), pas régime récurrent. Coût mesuré : ~$0,00002/call.
    → `--backend jev` de ce CLI (référence de calibration).
 2. **Demo featherless** — `POST https://simple-jev-demo-api.featherless.ai/v1/classifier`,
    sans auth, 2 RPS, contexte 2 K tok. Réponses `probabilities` + `confidence`
    (ordre [p(false), p(true)] — non tranché formellement, probe uniquement).
-   Modèles : `featherless-ai/simple-jev-27B` (gemma-3-27B-it),
-   `Qwen3.8-27B-classifier` (= mon GGUF sans fine-tune), `Qwen3-30B-A3B`.
-   **Anti-bot : le front HELD les clients python/urllib** (curl passe,
-   fingerprint TLS). → hors périmètre de ce CLI (probe contractuel 30/09).
+   Modèles (lineup **en rotation**) : 30/09 `featherless-ai/simple-jev-27B`
+   (gemma-3-27B-it), `Qwen3.8-27B-classifier` (= mon GGUF sans fine-tune),
+   `Qwen3-30B-A3B` ; **03/10 : `simple-jev-27B` disparu**, lineup =
+   `Qwen3.6-35B-A3B-classifier`, `Qwen3.8-27B-classifier`,
+   `Qwen3.5-4B-classifier`, `gemma-4-26B-A4B-classifier`,
+   `gemma-4-12B-it-classifier`, `RWKV-{small,mid,std}-classifier`.
+   **Le service s'auto-déclare instable** : `400 model_not_available` (03/10
+   20:51Z) avec « the public demo API gets overloaded time to time, for
+   production, upgrade… ». Latence 03/10 (Qwen3.8-27B-classifier, UA
+   navigateur) : 10/10 HTTP 200 en 1,23-1,35 s — rapide ce soir-là, mais la
+   tendance déclarée + le 2 RPS font de l'officiel le seul endpoint fiable
+   pour un default. **Anti-bot : le front HELD les clients python/urllib**
+   (curl passe, fingerprint TLS). → hors périmètre de ce CLI (probe
+   contractuel 30/09).
 
 ## Client Jev : curl, pas urllib (vérifié live 30/09)
 
