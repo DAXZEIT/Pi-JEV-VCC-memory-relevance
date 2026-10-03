@@ -135,8 +135,11 @@ static memory index.
 
 - **Default (local backend):** the scoring state — a snapshot of the current
   context (prompt head, or the post-compaction summary) plus the memory index
-  descriptions — goes only to the local scorer endpoint
-  (`--server`, default `127.0.0.1`). No network egress, no third party.
+  descriptions — goes to the local scorer endpoint (`--server`, default
+  `127.0.0.1`). The extension's default scorer target is local and the
+  extension itself makes no network request (no built-in HTTP client — it
+  delegates to the scorer). A custom `JEV_CMD` is trusted code and may have
+  its own network behavior (see Configuration).
 - **The extension itself never passes `--backend jev`** — it always scores
   against the local endpoint.
 - **`--backend jev` (manual, optional):** sends the full state and questions
