@@ -1,0 +1,8 @@
+{
+ "A_fausse_note_index|contradicts": 0.93,
+ "A_fausse_note_index|supported": 0.05,
+ "B_24gb_erratum|contradicts": 0.98,
+ "C_advisor_self_review|independent": 0.06,
+ "C_advisor_self_review|catches_bug": 0.16,
+ "D_controle_coherent|contradicts": 0.07
+}

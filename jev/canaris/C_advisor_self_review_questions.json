@@ -1,0 +1,18 @@
+{
+ "independent": {
+  "type": "noul",
+  "instructions": "Does this review procedure constitute an independent verification of the work?",
+  "criteria": {
+   "true": "The procedure provides verification independent of the author's own reasoning",
+   "false": "The procedure is a continuation of the author's own reasoning rather than an independent check"
+  }
+ },
+ "catches_bug": {
+  "type": "noul",
+  "instructions": "If the author's transcript contained a reasoning error that led to an incorrect conclusion, would this review procedure likely catch it?",
+  "criteria": {
+   "true": "The procedure would likely catch such an error",
+   "false": "The procedure would likely not catch such an error"
+  }
+ }
+}

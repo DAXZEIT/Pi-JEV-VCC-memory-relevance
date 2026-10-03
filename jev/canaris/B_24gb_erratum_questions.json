@@ -1,0 +1,10 @@
+{
+ "contradicts": {
+  "type": "noul",
+  "instructions": "Does the blog post's stated file size contradict the evidence in this state?",
+  "criteria": {
+   "true": "The stated size contradicts the measured size in the state",
+   "false": "The stated size is consistent with the measured size"
+  }
+ }
+}

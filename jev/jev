@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""jev — classifieur factuel typé : logits natifs du model local (par défaut)
+ou l'API Jev/TypeSafe (référence de calibration, fallback hors machine).
+
+Protocole fidèle à simple-jev : le code du protocole (prepare_policy,
+format_branch, canonical, noul→yes mapping) est VENDORISÉ byte-identique dans
+./protocol/ (source : /tmp/simple-jev, vérifié 2026-09-30) ; seul le rendu
+(jinja2, chat template du GGUF) et l'inférence (POST /v1/completions logprobs)
+sont locaux.
+
+Subcommandes :
+  ask       score un state + questions (local ou Jev)
+  selftest  régression 6 branches canaris vs références Jev (attend 6/6)
+  check     santé serveur + fraicheur du template vs GGUF
+
+Sortie : UN objet JSON sur stdout. Codes de sortie : 0 ok · 1 erreur dure
+(bad input, assert de protocole, serveur HS) · 2 timeout/skip (NE PAS
+réessayer en boucle — continuer sans le signal et le noter au rapport).
+
+Sécurité contextuelle : ne JAMAIS imprimer le texte rendu complet ni les
+marqueurs structurels du template (booleens, longueurs, sha256, 10 derniers
+caractères seulement). --dump-prompt FILE écrit le texte en clair dans un
+fichier (opt-in explicite, pour debug seulement — ne pas relire dans le
+contexte de session).
+"""
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+SKILL_DIR = Path(__file__).resolve().parent
+PROTOCOL_DIR = SKILL_DIR / "protocol"
+TEMPLATE_PATH = SKILL_DIR / "template_qwen38.j2"
+GGUF_PATH = Path("/home/dax/AI/qwen38-build/Qwen3.8-27B-UD-Q4_K_XL.gguf")
+CANARIS_DIR = SKILL_DIR / "canaris"
+DEFAULT_SERVER = "http://127.0.0.1:5000"
+DEFAULT_MODEL_LOCAL = "local/Qwen3.8-27B-UD-Q4_K_XL"
+JEV_URL = "https://openrouter.ai/api/alpha/decisions"
+JEV_MODEL = "typesafe/jev-1.13"
+AUTH_PATH = Path.home() / ".pi" / "agent" / "auth.json"  # store d'auth pi (fallback si env OPENROUTER_API_KEY absente)
+
+sys.path.insert(0, str(PROTOCOL_DIR))
+import jinja2.sandbox  # noqa: E402
+import numpy as np  # noqa: E402
+from common.request_schema import ClassifierRequest  # noqa: E402
+import hf_prompt_policies as hfp  # noqa: E402
+
+POLICY = "v1"
+POLICY_NAME = "shared_examples_binary"
+CLOSE_TURN = "<|" + "im_end|>" + "\n"
+
+
+class Deadline:
+    """Budget de temps global : ne jamais bloquer la session."""
+
+    def __init__(self, total_s):
+        self.total = total_s
+        self.t0 = time.time()
+
+    def remaining(self):
+        return self.total - (time.time() - self.t0)
+
+    def guard(self):
+        r = self.remaining()
+        if r <= 0:
+            raise TimeoutError(f"budget {self.total:.0f}s épuisé")
+        return r
+
+
+def http_post(url, payload, timeout):
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def die(err, code):
+    json.dump({"ok": False, "error": str(err)}, sys.stdout)
+    print()
+    sys.exit(code)
+
+
+def load_template():
+    return TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def compile_branch(request, plan, question):
+    """Reproduit hf_server.py (state path) : messages → format_branch →
+    prefill assistant, puis rendu jinja2. Texte renvoyé SANS la clôture de
+    tour (le renderer HF utilisait continue_final_message=True)."""
+    system = plan.system_prompt_prefix + plan.prefix_instruction
+    shared_thinking = any(q.type == "choice" for q in request.questions.values())
+    content = plan.suffix_instruction + question.instruction
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "State:\n" + hfp.canonical(request.state) + "\n\n" + content},
+    ]
+    messages, reasoning_content = hfp.format_branch(messages, request, question.question_id, POLICY_NAME)
+    native = [dict(m, content=[{"type": "text", "text": m["content"]}]
+                   if isinstance(m["content"], str) else m["content"]) for m in messages]
+    native.append({"role": "assistant",
+                   **({"reasoning_content": reasoning_content} if reasoning_content is not None else {}),
+                   "content": question.answer_prefix})
+    return native, shared_thinking
+
+
+def render_text(native, shared_thinking, template_str, answer_prefix):
+    env = jinja2.sandbox.ImmutableSandboxedEnvironment(
+        trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True)
+    rendered = env.from_string(template_str).render(
+        messages=native, add_generation_prompt=False,
+        enable_thinking=shared_thinking, reasoning_effort="xhigh")
+    if not rendered.endswith(CLOSE_TURN):
+        raise RuntimeError("assert a-1: template ne clot pas le tour assistant (template HS ou GGUF changé — `jev check`)")
+    text = rendered[:-len(CLOSE_TURN)]
+    if not text.endswith(answer_prefix):
+        raise RuntimeError("assert a: texte rendu ne se termine pas par le prefixe d'answer du protocole (template HS — `jev check`)")
+    return text
+
+
+def tokenize(server, text, deadline):
+    resp = http_post(server + "/tokenize", {"content": text}, deadline.guard())
+    return resp["tokens"]
+
+
+def check_boundary(server, text, labels, deadline):
+    """Assert de protocole : les 2 labels sont single-token au boundary, ids distincts."""
+    if len(labels) != 2:
+        raise RuntimeError(f"v1 attend exactement 2 labels, reçus {len(labels)}")
+    la, lb = labels[0], labels[1]
+    ids = tokenize(server, text, deadline)
+    ext_a = tokenize(server, text + la, deadline)
+    ext_b = tokenize(server, text + lb, deadline)
+    ok_prefix = ext_a[:-1] == ids and ext_b[:-1] == ids
+    ok_single = len(ext_a) == len(ids) + 1 and len(ext_b) == len(ids) + 1
+    if not (ok_prefix and ok_single and ext_a[-1] != ext_b[-1]):
+        raise RuntimeError(f"assert b: labels {la!r}/{lb!r} non single-token au boundary — "
+                           "state/question incompatible avec le protocole (vérifier la question)")
+    return ext_a[-1], ext_b[-1], len(ids)
+
+
+def score_anchor(server, prefix, deadline):
+    """Pré-chauffe le préfixe partagé : 1 completion du préfixe seul, réponse jetée.
+
+    Pourquoi ça marche (mesuré 01/10, llama.cpp b10991) : le serveur applique
+    n_past = LCP uniquement si un checkpoint de contexte couvre le point de
+    divergence (server-context.cpp ~3219/~3390 : pos_max ≤ pos_next et
+    pos_min < pos_next − n_swa − 1, sinon « forcing full prompt re-processing »
+    — le modèle est un hybride SSM). Le checkpoint frontalier de l'ancre P tombe
+    exactement à |P| = le point de divergence → toutes les branches P+Q réutilisent
+    le préfixe (~0.6 s/branche au lieu de ~4.5 s, préfixe ~4.4k tokens ; 24
+    branches ≈ 23 s au lieu de ~150 s). P doit être le préfixe commun de TOUTES
+    les branches (os.path.commonprefix sur la liste complète)."""
+    payload = {"prompt": prefix, "max_tokens": 1, "temperature": 0.0, "cache_prompt": True}
+    t0 = time.time()
+    http_post(server + "/v1/completions", payload, deadline.guard())
+    return time.time() - t0
+
+
+def score_local(server, text, labels, deadline):
+    """POST /v1/completions logprobs=50, 1 token ; softmax float32 sur les 2 labels.
+    Retourne (lp_a, lp_b, passes, latency_s) — a = 1er label ('no'), b = 2e ('yes').
+    cache_prompt=True : bit-neutre (vérifié 01/10, Δlp=0 exact en conditions
+    appariées) mais documente l'intention de réutilisation du préfixe."""
+    payload = {"prompt": text, "max_tokens": 1, "temperature": 0.0, "logprobs": 50,
+               "cache_prompt": True}
+    t0 = time.time()
+    resp = http_post(server + "/v1/completions", payload, deadline.guard())
+    latency = time.time() - t0
+    lp = extract_labels(resp, labels)
+    passes = 1
+    if lp is None:
+        # Secours : biais égal sur les 2 labels (l'écart lp_a-lp_b est préservé).
+        payload["logit_bias"] = {labels[0]: 10.0, labels[1]: 10.0}
+        t0 = time.time()
+        resp = http_post(server + "/v1/completions", payload, deadline.guard())
+        latency += time.time() - t0
+        lp = extract_labels(resp, labels)
+        passes = 2
+        if lp is None:
+            raise RuntimeError(f"labels {labels[0]!r}/{labels[1]!r} introuvables dans le top-50 même avec logit_bias égal")
+    return lp[0], lp[1], passes, latency
+
+
+def extract_labels(resp, labels):
+    ch = resp["choices"][0].get("logprobs")
+    if not ch:
+        return None
+    content = ch.get("content")
+    if not content:
+        return None
+    top = content[0].get("top_logprobs")
+    if not top:
+        return None
+    table = {e["token"]: e["logprob"] for e in top}
+    if labels[0] in table and labels[1] in table:
+        return table[labels[0]], table[labels[1]]
+    return None
+
+
+def softmax2(lp_a, lp_b):
+    """reponse_scoring.py:250,255-256 — float32, B == 'yes'."""
+    z = np.asarray([lp_a, lp_b], dtype=np.float32)
+    p = np.exp(z - z.max())
+    p /= p.sum()
+    return float(p[0]), float(p[1])
+
+
+def score_question_local(server, request, plan, question, template_str, deadline, dump=None, text=None):
+    if text is None:
+        native, shared_thinking = compile_branch(request, plan, question)
+        text = render_text(native, shared_thinking, template_str, question.answer_prefix)
+    if dump:
+        Path(dump).write_text(text, encoding="utf-8")
+    id_a, id_b, ntok = check_boundary(server, text, question.output_labels, deadline)
+    lp_a, lp_b, passes, latency = score_local(server, text, question.output_labels, deadline)
+    p_a, p_b = softmax2(lp_a, lp_b)
+    # noul → binaire A=no / B=yes (hf_prompt_policies.py:111-115, insertion no→yes) ;
+    # answer_labels portent les étiquettes publiques du protocole.
+    original = request.questions[question.question_id].type
+    la, lb = question.answer_labels[0], question.answer_labels[1]
+    out = {
+        "type": original,
+        "probs": {la: round(p_a, 6), lb: round(p_b, 6)},
+        "verdict": la if p_a >= p_b else lb,
+        "confidence": round(max(p_a, p_b), 6),
+        "prompt_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "prompt_len": len(text),
+        "n_tokens": ntok,
+        "token_ids": {question.output_labels[0]: id_a, question.output_labels[1]: id_b},
+        "scoring_passes": passes,
+        "latency_s": round(latency, 3),
+    }
+    return out
+
+
+def build_request(state, questions, model):
+    return ClassifierRequest.model_validate(
+        {"model": model, "state": state, "questions": questions})
+
+
+def cmd_ask(args):
+    if args.timeout is None:
+        args.timeout = 60.0 if args.backend == "jev" else 120.0
+    if args.state_stdin:
+        state = json.load(sys.stdin)
+    elif args.state:
+        state = json.loads(Path(args.state).read_text(encoding="utf-8"))
+    else:
+        die("--state FILE ou --state-stdin requis", 1)
+    questions = json.loads(Path(args.questions).read_text(encoding="utf-8"))
+
+    deadline = Deadline(args.timeout)
+    try:
+        if args.backend == "local":
+            request = build_request(state, questions, args.model or DEFAULT_MODEL_LOCAL)
+            plan, binary_keys = hfp.prepare_policy(request, POLICY, POLICY_NAME)
+            if len(binary_keys) != len(questions):
+                die(f"conversion binaire incomplète : {len(binary_keys)}/{len(questions)}", 1)
+            plan_questions = {q.question_id: q for q in plan.questions}
+            template_str = load_template()
+            # Passe 1 : rendu local de toutes les branches (aucun appel GPU) —
+            # indispensable pour l'ancre (préfixe commun à TOUTES les branches).
+            branch_texts = {}
+            for qid in questions:
+                q = plan_questions[qid]
+                native, shared_thinking = compile_branch(request, plan, q)
+                branch_texts[qid] = render_text(
+                    native, shared_thinking, template_str, q.answer_prefix)
+                if args.dump_prompt:
+                    Path(args.dump_prompt).write_text(branch_texts[qid], encoding="utf-8")
+            # Ancre : 1 completion du préfixe partagé (mesuré 01/10 — voir score_anchor).
+            anchor = {"sent": False, "reason": "une seule question"}
+            if len(branch_texts) >= 2:
+                prefix = os.path.commonprefix(list(branch_texts.values()))
+                first = next(iter(branch_texts.values()))
+                if 0 < len(prefix) < len(first):
+                    try:
+                        anchor = {"sent": True, "prefix_chars": len(prefix),
+                                  "latency_s": round(score_anchor(args.server, prefix, deadline), 3)}
+                    except Exception as e:
+                        # Ancre en échec → continuation sans ancre (pas de crash : le
+                        # budget/le serveur restent gérés par deadline, exit 2 si HS).
+                        anchor = {"sent": False, "reason": f"ancre échouée : {e}"}
+                else:
+                    anchor["reason"] = ("prefix commun absent ou complet "
+                                        "(prompts identiques — le cache RAM suffit)")
+            results = {}
+            for qid in questions:
+                q = plan_questions[qid]
+                results[qid] = score_question_local(
+                    args.server, request, plan, q, template_str, deadline,
+                    text=branch_texts[qid])
+            out = {"ok": True, "backend": "local", "server": args.server,
+                   "model": args.model or DEFAULT_MODEL_LOCAL,
+                   "anchor": anchor, "results": results}
+        else:
+            out = score_jev(state, questions, args, deadline)
+    except TimeoutError as e:
+        json.dump({"ok": False, "skipped": True, "reason": str(e)}, sys.stdout)
+        print()
+        sys.exit(2)
+    except (RuntimeError, ValueError, KeyError) as e:
+        die(e, 1)
+    except urllib.error.URLError as e:
+        target = args.server if args.backend == "local" else JEV_URL
+        die(f"endpoint injoignable ({target}) : {e.reason}", 1)
+    json.dump(out, sys.stdout)
+    print()
+
+
+def cmd_selftest(args):
+    manifest = json.loads((CANARIS_DIR / "manifest.json").read_text(encoding="utf-8"))
+    jev_ref = json.loads((CANARIS_DIR / "jev_ref.json").read_text(encoding="utf-8"))
+    deadline = Deadline(args.timeout)
+    rows, ok_dir = [], 0
+    try:
+        for entry in manifest:
+            state = json.loads((SKILL_DIR / entry["state"]).read_text(encoding="utf-8"))
+            questions = json.loads((SKILL_DIR / entry["questions"]).read_text(encoding="utf-8"))
+            request = build_request(state, questions, DEFAULT_MODEL_LOCAL)
+            plan, _ = hfp.prepare_policy(request, POLICY, POLICY_NAME)
+            plan_questions = {q.question_id: q for q in plan.questions}
+            template_str = load_template()
+            for qid in questions:
+                q = plan_questions[qid]
+                r = score_question_local(args.server, request, plan, q, template_str, deadline)
+                ref = jev_ref.get(f"{entry['case']}|{qid}")
+                direction = ref is not None and (r["probs"]["yes"] > 0.5) == (ref > 0.5)
+                ok_dir += direction
+                rows.append({"case": entry["case"], "question": qid,
+                             "jev_ref": ref, "noul": r["probs"]["yes"],
+                             "direction_ok": direction,
+                             "latency_s": r["latency_s"], "prompt_sha256": r["prompt_sha256"][:16]})
+    except TimeoutError as e:
+        json.dump({"ok": False, "skipped": True, "reason": str(e)}, sys.stdout)
+        print()
+        sys.exit(2)
+    except (RuntimeError, ValueError) as e:
+        die(e, 1)
+    json.dump({"ok": ok_dir == len(rows), "backend": "local", "server": args.server,
+               "direction_ok": f"{ok_dir}/{len(rows)}", "rows": rows}, sys.stdout)
+    print()
+    sys.exit(0 if ok_dir == len(rows) else 1)
+
+
+def cmd_check(args):
+    report = {"ok": True, "checks": {}}
+    # 1) serveur
+    try:
+        with urllib.request.urlopen(args.server + "/health", timeout=5) as r:
+            report["checks"]["server"] = {"ok": True, "status": r.status}
+    except Exception as e:
+        report["checks"]["server"] = {"ok": False, "error": str(e.reason if hasattr(e, "reason") else e)}
+        report["ok"] = False
+    # 2) fraicheur du template vs GGUF (extraction ~6 s)
+    if args.no_template:
+        report["checks"]["template"] = {"skipped": True}
+    else:
+        try:
+            from gguf import GGUFReader
+            g = GGUFReader(str(GGUF_PATH))
+            parts = g.fields["tokenizer.chat_template"].parts
+            gguf_tmpl = bytes(parts[-1].tolist()).decode("utf-8")
+            vendored = load_template()
+            same = gguf_tmpl == vendored
+            report["checks"]["template"] = {
+                "ok": same,
+                "gguf_sha256": hashlib.sha256(gguf_tmpl.encode()).hexdigest()[:16],
+                "vendored_sha256": hashlib.sha256(vendored.encode()).hexdigest()[:16],
+                "gguf": str(GGUF_PATH),
+            }
+            if same and args.sync:
+                pass
+            elif not same and args.sync:
+                TEMPLATE_PATH.write_text(gguf_tmpl, encoding="utf-8")
+                report["checks"]["template"]["synced"] = True
+            elif not same:
+                report["ok"] = False
+                report["checks"]["template"]["hint"] = "template stale — relancer avec --sync après un swap de GGUF"
+        except Exception as e:
+            report["checks"]["template"] = {"ok": False, "error": str(e)}
+            report["ok"] = False
+    # 3) pydantic/numpy/jinja2 importables (déjà importés au module — sinon on n'aurait pas atteint ici)
+    report["checks"]["deps"] = {"ok": True, "pydantic": "importé", "numpy": "importé", "jinja2": "importé"}
+    json.dump(report, sys.stdout)
+    print()
+    sys.exit(0 if report["ok"] else 1)
+
+
+# ---------------------------------------------------------------- Jev API
+# L'API OFFICIELLE Jev/TypeSafe (référence de calibration du spike 28/09) :
+#   POST https://openrouter.ai/api/alpha/decisions, Bearer = clé OpenRouter
+#   (env OPENROUTER_API_KEY, sinon store d'auth pi — voir jev_key),
+#   body {model, state, questions}, réponse {answers: {qid: {type, noul|choice|score}},
+#   usage, cost}. Le champ `noul` est un SCALAIRE = p(true) du critère (vérifié
+#   28/09 : les 6 références canaris sont sémantiquement cohérentes avec p(true),
+#   ex. C|independent=0.06 — le state est bien un self-review). Latence 0.7 s
+#   typique, queue intermittente 180-270 s → le budget de timeout est la garde
+#   (exit 2 = skip, jamais de retry en boucle).
+# (La demo featherless simple-jev est un PROBE contractuel distinct — pas auth,
+#  anti-bot python/urllib, réponses `probabilities`+`confidence` : voir NOTES.md,
+#  hors périmètre de ce CLI.)
+# CLIENT : curl en subprocess, PAS urllib — vérifié live 2026-09-30 : l'edge tient
+#  les clients python (urlopen(timeout=15) a répondu à 30,5 s ; le socket timeout
+#  n'est PAS un budget dur sur ce endpoint), tandis que curl passe en 0,8 s.
+#  Même pattern que le piège anti-bot featherless documenté 28/09. --max-time =
+#  le budget ; le timeout subprocess est un backstop seulement.
+def jev_key():
+    # priorité : env (convention OpenRouter), puis le store d'auth pi.
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if key:
+        return key
+    if not AUTH_PATH.exists():
+        return None
+    data = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+    or_block = data.get("openrouter")
+    if isinstance(or_block, dict):
+        return or_block.get("key")
+    return or_block if isinstance(or_block, str) else None
+
+
+def score_jev(state, questions, args, deadline):
+    key = jev_key()
+    if not key:
+        raise RuntimeError("clé OpenRouter absente (env OPENROUTER_API_KEY ou store d'auth pi)")
+    budget = deadline.guard()
+    curl_timeout = max(1, int(budget))  # le budget plafonne la queue (180-270 s), pas le fast path (0,7 s)
+    body = json.dumps({"model": JEV_MODEL, "state": state, "questions": questions})
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            ["curl", "-sS", "-m", str(curl_timeout), "-w", "\n%{http_code}",
+             JEV_URL,
+             "-H", "Content-Type: application/json",
+             "-H", f"Authorization: Bearer {key}",
+             "-d", body],
+            capture_output=True, text=True, timeout=curl_timeout + 15)
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(f"budget {args.timeout:.0f}s épuisé (backstop curl — queue Jev 180-270 s probable)")
+    latency = time.time() - t0
+    if proc.returncode == 28:
+        raise TimeoutError(f"curl max-time {curl_timeout}s dépassé (queue Jev 180-270 s probable — skip, ne pas retry en boucle)")
+    if not proc.stdout or proc.returncode not in (0,):
+        raise RuntimeError(f"curl rc={proc.returncode} : {proc.stderr[:200]}")
+    body_str, _, code = proc.stdout.rpartition("\n")
+    if code.strip() != "200":
+        raise RuntimeError(f"Jev HTTP {code.strip()} : {body_str[:200]}")
+    resp = json.loads(body_str)
+    results = {}
+    answers = resp.get("answers", {})
+    for qid, spec in questions.items():
+        a = answers.get(qid, {})
+        atype = a.get("type", spec["type"])
+        if atype == "noul":
+            p_true = float(a.get("noul", 0.0))
+            results[qid] = {
+                "type": "noul",
+                "probs": {"no": round(1 - p_true, 6), "yes": round(p_true, 6)},
+                "verdict": "yes" if p_true > 0.5 else "no",
+                "confidence": round(max(p_true, 1 - p_true), 6),
+                "raw": a,
+            }
+        elif atype == "choice":
+            probs = a.get("choice", {})
+            results[qid] = {"type": "choice", "probs": probs, "raw": a}
+        else:
+            results[qid] = {"type": atype, "raw": a}
+    return {"ok": True, "backend": "jev", "endpoint": JEV_URL, "model": JEV_MODEL,
+            "latency_s": round(latency, 2),
+            "usage": resp.get("usage"), "results": results}
+
+
+def main():
+    p = argparse.ArgumentParser(prog="jev", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pa = sub.add_parser("ask", help="score un state + questions")
+    pa.add_argument("--state", help="fichier JSON (state)")
+    pa.add_argument("--state-stdin", action="store_true", help="state JSON sur stdin")
+    pa.add_argument("--questions", required=True, help="fichier JSON {qid: {type, instructions, criteria}}")
+    pa.add_argument("--backend", choices=["local", "jev"], default="local")
+    pa.add_argument("--server", default=DEFAULT_SERVER)
+    pa.add_argument("--model", default=None, help="nom du modèle (informatif)")
+    pa.add_argument("--timeout", type=float, default=None,
+                    help="budget total en s (défaut 120 local / 60 jev — queue 180-270 s : le timeout est la garde)")
+    pa.add_argument("--dump-prompt", default=None, help="écrire le texte rendu en clair dans ce fichier (debug, dangereux pour le contexte)")
+    pa.set_defaults(fn=cmd_ask)
+
+    ps = sub.add_parser("selftest", help="régression 6 branches canaris (attend 6/6)")
+    ps.add_argument("--server", default=DEFAULT_SERVER)
+    ps.add_argument("--timeout", type=float, default=180.0)
+    ps.set_defaults(fn=cmd_selftest)
+
+    pc = sub.add_parser("check", help="santé serveur + fraicheur template vs GGUF")
+    pc.add_argument("--server", default=DEFAULT_SERVER)
+    pc.add_argument("--sync", action="store_true", help="resync le template vendorisé depuis le GGUF s'il a divergé")
+    pc.add_argument("--no-template", action="store_true", help="ne pas extraire le template du GGUF (~6 s)")
+    pc.set_defaults(fn=cmd_check)
+
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

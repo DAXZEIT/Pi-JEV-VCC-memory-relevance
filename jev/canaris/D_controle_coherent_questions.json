@@ -1,0 +1,10 @@
+{
+ "contradicts": {
+  "type": "noul",
+  "instructions": "Does the memory note contradict the measurement in this state?",
+  "criteria": {
+   "true": "The note contradicts the measurement",
+   "false": "The note is consistent with the measurement"
+  }
+ }
+}

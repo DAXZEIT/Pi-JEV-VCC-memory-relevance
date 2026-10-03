@@ -12,15 +12,17 @@
  * 1. COLD START — hook `before_agent_start` (after the user prompt, BEFORE
  *    the first LLM call): fires exactly once per session on the first real
  *    user message (prompts < 30 chars or slash-commands ignored). Runs
- *    SYNCHRONOUSLY (~15-20 s, hard budget 45 s) so the very first prefill
+ *    SYNCHRONOUSLY (~15-35 s measured, hard budget 45 s) so the very first prefill
  *    already contains the hint. Result = custom message `memory_relevance`
  *    (top-10, display: false → invisible in the TUI, present in the model
  *    context and the session jsonl).
  *
- * 2. POST-COMPACTION — hook `session_compact` (fired by pi's compactor):
+ * 2. POST-COMPACTION — hook `session_compact` (fired by pi's compactor —
+ *    in pi 1.0.0 this hook is in the type declarations but not covered by
+ *    the public docs; only `session_compact_failed` is documented):
  *    the post-compaction summary IS the state to score against. Runs
  *    SYNCHRONOUSLY-BLOCKING: pi awaits this emit before resuming the agent,
- *    so the handler delays resumption by ~15-20 s and queues the hint
+ *    so the handler delays resumption by ~15-35 s and queues the hint
  *    BEFORE returning — it is drained into the FIRST post-compaction prefill,
  *    exactly like the cold start. TUI shows a status line while waiting.
  *    Skips non-pi-vcc compactions, empty summaries and retries.
@@ -333,7 +335,7 @@ export default (pi: unknown): void => {
     name: "memory_relevance",
     label: "Memory relevance",
     description:
-      "Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a local logit-level scorer (~15 s, no network). " +
+      "Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s; no egress with a local scorer endpoint). " +
       "Returns the FULL ranking of all memory files (sorted, graduated scores — the gradient shows where to cut). SLOW — call at most once per task, only when you suspect a memory file holds needed context and your static index lines don't tell you which. " +
       "Scores are informational only: afterwards, read whichever file(s) you choose with the read tool — nothing is injected.",
     parameters: {

@@ -1,0 +1,26 @@
+{
+ "contradicts": {
+  "type": "noul",
+  "instructions": "Does the claim under test contradict the recorded evidence in the state?",
+  "criteria": {
+   "true": "The claim contradicts at least one piece of recorded evidence: a direct conflict, or an unsupported modification of a recorded fact.",
+   "false": "The claim is consistent with all recorded evidence and asserts nothing the evidence contradicts."
+  }
+ },
+ "supported": {
+  "type": "noul",
+  "instructions": "Is the claim under test fully supported by the recorded evidence in the state?",
+  "criteria": {
+   "true": "Every factual element of the claim is present in, or directly derivable from, the recorded evidence.",
+   "false": "At least one factual element of the claim is not present in the recorded evidence."
+  }
+ },
+ "novel": {
+  "type": "noul",
+  "instructions": "Does the claim under test introduce factual information that is not in the state?",
+  "criteria": {
+   "true": "The claim contains factual assertions that are absent from the recorded evidence.",
+   "false": "The claim adds no new factual assertions beyond what the recorded evidence already states."
+  }
+ }
+}

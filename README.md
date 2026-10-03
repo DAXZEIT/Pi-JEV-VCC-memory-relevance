@@ -1,5 +1,7 @@
 # Pi-JEV-VCC-memory-relevance
 
+![The noise floor, the graduated ranking, the dashed cut, and the hand that picks only the brightest](docs/hero.png)
+
 **A lightweight memory relevance scorer for the Pi coding agent.**
 
 Long-running agents accumulate memory. The hard part is not storing it — it's knowing
@@ -187,6 +189,14 @@ Good descriptions matter.
 
 Garbage descriptions produce garbage priors.
 
+The auto-generated descriptions are a first draft — the best index comes from
+curating them. If you keep an AGENTS.md-style static index (one
+`trigger → file` line per memory), pass `--index-file` to
+`scripts/build-index.py` and those trigger lines become the descriptions
+(`"desc_src": "index"` — the provenance field in
+`examples/memory_index.example.json` records where each description came
+from).
+
 ---
 
 ## Performance
@@ -230,13 +240,23 @@ What did transfer was the useful part for this project:
 
 ### 1. Scorer
 
-Use the bundled reference scorer with any OpenAI-compatible endpoint exposing
-logprobs (for example `llama-server` or vLLM), or provide your own implementation
-following `docs/scorer-contract.md`.
+The bundled **`jev/` skill** is the reference setup: a native-logit yes/no
+scorer CLI following the [simple-jev](https://github.com/featherless-ai/simple-jev)
+protocol, with a local backend (a llama-server-style endpoint, default
+`127.0.0.1:5000`, override with `--server`) and an optional hosted backend
+(`--backend jev` — that call **leaves the machine**, the local one is the
+default: zero egress, zero cost).
 
 ```bash
-chmod +x scripts/scorer-openai.py
+pip install jinja2 numpy pydantic
+ln -s "$PWD/jev"   ~/.pi/agent/skills/jev   # pi auto-discovers the skill
+ln -sf "$PWD/jev/jev" ~/.local/bin/jev      # the CLI on PATH
+jev selftest                                # 6-branch canary regression, expect 6/6
 ```
+
+Alternatives: the bundled `scripts/scorer-openai.py` with any
+OpenAI-compatible endpoint exposing logprobs (`chmod +x` first), or point
+`JEV_CMD` at any CLI implementing `docs/scorer-contract.md`.
 
 ### 2. Build the memory index
 
@@ -244,7 +264,8 @@ chmod +x scripts/scorer-openai.py
 python3 scripts/build-index.py   --dir ~/.pi/agent/memory   --out ~/.pi/agent/memory_index.json
 ```
 
-Review the generated descriptions before relying on them.
+Review the generated descriptions before relying on them (or curate them with
+`--index-file`, see Memory index above).
 
 ### 3. Install the Pi extension
 
@@ -261,34 +282,37 @@ Then reload Pi.
 Optional environment variables:
 
 ```text
-JEV_CMD
-JEV_MEMORY_INDEX
+JEV_CMD            scorer CLI (default: the jev skill's CLI on PATH)
+JEV_MEMORY_INDEX   memory index path (default: ~/.pi/agent/memory_index.json)
+JEV_ENDPOINT       OpenAI-compatible endpoint for scripts/scorer-openai.py
+JEV_MODEL          model name for the reference scorer
+OPENROUTER_API_KEY OpenRouter key for the jev skill's hosted backend
+                   (fallback: Pi's auth store — see jev_key() in jev/jev)
 ```
-
-The extension expects Pi's extension loader and a running OpenAI-compatible
-completion endpoint for the reference scorer.
 
 Requirements:
 
-- Pi coding agent
+- **Pi coding agent ≥ 1.0** — the post-compaction trigger uses the
+  `session_compact` event. On pi 1.0 this hook fires synchronously (pi awaits
+  it before resuming the agent) but is not yet covered by the public docs;
+  on older pi the trigger is silently absent.
+- **Pi-VCC (optional)** — without it, the cold start scores the raw context
+  and the post-compaction trigger simply never fires.
 - Node.js ≥ 20
-- local logit-capable scorer
+- a local logit-capable scorer (the bundled `jev/` skill needs
+  `jinja2 numpy pydantic`)
 
 ---
 
-## Limitations
+## Troubleshooting
 
-This is a **memory navigation aid**, not a truth oracle.
-
-Scores should be interpreted as ranking signals and verified by reading the
-memory itself.
-
-The current experiments do not establish general retrieval quality across
-hundreds of unrelated sessions. The memory-ranking behaviour is still an
-active experiment.
-
-The wording of the scoring prompts is deliberately frozen; changing it means
-changing the measurement and should be followed by a re-evaluation.
+| Symptom | What it means |
+|---|---|
+| Tool returns a skip notice (exit 2) | The scorer timed out or returned empty — a degraded (quantized) local model can answer with zero tokens. No retry by design; the next trigger or the on-demand tool is the fallback. |
+| All scores ≈ 0.000–0.001 | Normal: that is the **noise floor** (calibrated P("Yes") on irrelevant memories). The signal is the gradient above it. |
+| First call is slow | ~15-35 s cold, ~10 s warm (shared-prefix KV reuse). |
+| `memory index not found` | No default path is trusted — set `JEV_MEMORY_INDEX` or pass `--index`. |
+| Nothing happens after compaction | Needs pi ≥ 1.0 (see Configuration). |
 
 ---
 
@@ -297,13 +321,26 @@ changing the measurement and should be followed by a re-evaluation.
 ```text
 jev-relevance.ts            Pi extension
 docs/scorer-contract.md     scorer contract + calibration notes
-scripts/scorer-openai.py    reference scorer
-scripts/build-index.py      memory directory → index JSON
+docs/hero.png               README banner
+scripts/scorer-openai.py    reference scorer (OpenAI-compatible logprobs)
+scripts/build-index.py      memory dir → index JSON (+ --index-file curation)
 examples/memory_index.example.json
+jev/                        the jev skill — the reference scorer
+jev/jev                     the scorer CLI (ask / selftest / check)
+jev/protocol/               vendored simple-jev protocol — Apache 2.0
+jev/canaris/                6-branch canary regression (states, questions, refs)
+jev/presets/                ready-made noul question presets
+jev/template_qwen38.j2      chat template for the reference local GGUF
+jev/SKILL.md                the pi skill (when to use it, exit-code discipline)
+jev/NOTES.md                design notes + measured proof
 ```
 
 ---
 
 ## License
 
-MIT
+MIT — see LICENSE, **except `jev/protocol/`**, which is vendored
+byte-identical (unmodified) from
+[simple-jev](https://github.com/featherless-ai/simple-jev) under the Apache
+License 2.0 — see `jev/protocol/LICENSE` and `jev/protocol/ATTRIBUTION.md`
+(upstream URL, pinned commit, per-file sha256).

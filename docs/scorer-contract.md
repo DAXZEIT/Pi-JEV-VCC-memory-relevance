@@ -52,6 +52,9 @@ on-demand tool).
 - `anchor` — optional, opaque. Reserved for shared-prefix KV-cache anchors
   (a large speedup when the state prefix is identical across all questions:
   24 branches in ~28 s instead of ~150 s in our setup). `null` is fine.
+- Additional top-level keys are tolerated and ignored by the extension
+  (the bundled reference scorer also emits `wall_s`; the `jev` reference
+  implementation emits `backend` and `server`).
 
 ## Implementations
 

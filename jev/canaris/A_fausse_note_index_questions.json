@@ -1,0 +1,18 @@
+{
+ "contradicts": {
+  "type": "noul",
+  "instructions": "Does the memory note's claim that the index is stale contradict the evidence in this state?",
+  "criteria": {
+   "true": "The claim directly contradicts evidence present in the state",
+   "false": "The claim is consistent with the state or the state lacks evidence either way"
+  }
+ },
+ "supported": {
+  "type": "noul",
+  "instructions": "Is the memory note's claim supported by evidence present in this state?",
+  "criteria": {
+   "true": "Evidence in the state directly supports the claim",
+   "false": "No evidence in the state supports the claim, or the evidence contradicts it"
+  }
+ }
+}

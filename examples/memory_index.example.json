@@ -3,17 +3,22 @@
     {
       "id": "deploy-runbook",
       "path": "/home/you/.pi/agent/memory/deploy-runbook.md",
-      "desc_en": "Deployment procedures for the homelab: server inventory, SSH access rules, firewall pitfalls, service layout."
+      "index_line": "Deploy runbook : server inventory, SSH access rules, firewall pitfalls, service layout → `memory/deploy-runbook.md`",
+      "desc_en": "Deployment procedures for the homelab: server inventory, SSH access rules, firewall pitfalls, service layout.",
+      "desc_src": "curated"
     },
     {
       "id": "project-foo-status",
       "path": "/home/you/.pi/agent/memory/project-foo-status.md",
-      "desc_en": "Current state of project Foo: open blockers, measured benchmarks, next milestones, known traps."
+      "index_line": "Project Foo (~/projects/foo) : pre-training state, measured numbers, resume procedure, exploitation traps → `memory/project-foo-status.md`",
+      "desc_en": "Current state of project Foo: open blockers, measured benchmarks, next milestones, known traps.",
+      "desc_src": "curated"
     },
     {
       "id": "user-preferences",
       "path": "/home/you/.pi/agent/memory/user-preferences.md",
-      "desc_en": "How the user works: language, tooling preferences, workflow conventions."
+      "desc_en": "How the user works: language, tooling preferences, workflow conventions.",
+      "desc_src": "derived"
     }
   ]
 }

@@ -1,0 +1,22 @@
+[
+ {
+  "case": "A_fausse_note_index",
+  "state": "canaris/A_fausse_note_index_state.json",
+  "questions": "canaris/A_fausse_note_index_questions.json"
+ },
+ {
+  "case": "B_24gb_erratum",
+  "state": "canaris/B_24gb_erratum_state.json",
+  "questions": "canaris/B_24gb_erratum_questions.json"
+ },
+ {
+  "case": "C_advisor_self_review",
+  "state": "canaris/C_advisor_self_review_state.json",
+  "questions": "canaris/C_advisor_self_review_questions.json"
+ },
+ {
+  "case": "D_controle_coherent",
+  "state": "canaris/D_controle_coherent_state.json",
+  "questions": "canaris/D_controle_coherent_questions.json"
+ }
+]
