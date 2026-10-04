@@ -40,7 +40,13 @@
  * framings per trigger — do not reword without re-measuring; the wording
  * IS the metric), failure = skip + log, never a throw into the session.
  *
- * Requires: a scorer CLI implementing the `ask` contract
+ * Backends (spec §2/§4) — one RelevanceScorer interface, two implementations:
+ *   local (default until §22 step 5): `jev ask` CLI on the loopback logit
+ *     server — zero egress. JEV_CMD is probed only when this backend runs.
+ *   jev (PI_JEV_BACKEND=jev): the hosted Decisions API, model pinned via
+ *     PI_JEV_MODEL (default typesafe/jev-1.13), OPENROUTER_API_KEY only.
+ *
+ * Requires: a scorer CLI implementing the `ask` contract for the local lane
  * (see docs/scorer-contract.md) and a memory index JSON
  * (see examples/memory_index.example.json + scripts/build-index.py).
  */
@@ -62,25 +68,17 @@ type PiOn = { on?: (event: string, handler: (event?: any, ctx?: any) => unknown)
 
 // Configuration. Override via environment; defaults match the conventional
 // pi agent dir layout (~/.pi/agent) and a scorer named `jev` on PATH.
-// Scorer CLI. JEV_CMD is a TRUSTED-EXECUTABLE boundary: it is invoked
-// directly (no shell) but the configured path is fully trusted — it receives
-// the scoring state (a snapshot of the current context) as a file argument
-// and runs with the user's privileges. Resolved and validated once at load.
+// Scorer CLI (local backend). JEV_CMD is a TRUSTED-EXECUTABLE boundary: it is
+// invoked directly (no shell) but the configured path is fully trusted — it
+// receives the scoring state (a snapshot of the current context) as a file
+// argument and runs with the user's privileges. Probed only when the local
+// backend is selected (spec AM8: hosted mode must not require or probe it).
 const JEV = process.env.JEV_CMD ?? path.join(os.homedir(), ".local", "bin", "jev");
-const jevUsable = (() => {
-  try {
-    if (!statSync(JEV).isFile()) return { ok: false, why: `not a regular file: ${JEV}` };
-    accessSync(JEV, constants.X_OK);
-    return { ok: true, why: "" };
-  } catch {
-    return {
-      ok: false,
-      why: process.env.JEV_CMD
-        ? `JEV_CMD not usable (${JEV}) — it must be a regular executable file`
-        : `scorer not found: ${JEV} — install the jev skill or set JEV_CMD`,
-    };
-  }
-})();
+// Backend selection (spec §2.3/§9). Default stays "local" until the hosted
+// lane is proven — spec §22 step 5 flips the default to "jev" (+ README).
+const BACKEND = (process.env.PI_JEV_BACKEND ?? "local").toLowerCase();
+const JEV_MODEL = process.env.PI_JEV_MODEL ?? "typesafe/jev-1.13"; // pinned, never a floating alias (spec §14)
+const JEV_ENDPOINT = process.env.PI_JEV_ENDPOINT ?? "https://openrouter.ai/api/alpha/decisions"; // alpha path (spec AM8)
 const INDEX = process.env.JEV_MEMORY_INDEX ?? path.join(os.homedir(), ".pi", "agent", "memory_index.json");
 const DIR = path.join(os.homedir(), ".cache", "jev-relevance");
 const LOG = path.join(DIR, "log.jsonl");
@@ -146,49 +144,151 @@ const buildQuestions = (mems: MemoryEntry[], framing: Framing): Record<string, u
   return qs;
 };
 
-const runJev = (state: string, mems: MemoryEntry[], framing: Framing, timeoutS: number): Promise<{ rows: Array<{ id: string; path: string; score: number }>; wallS: number; anchor?: unknown }> =>
-  new Promise((resolve, reject) => {
-    const t0 = Date.now();
-    if (!jevUsable.ok) {
-      reject(new Error(`scorer unavailable: ${jevUsable.why}`));
-      return;
-    }
+// Scorer abstraction (spec §4) — deliberately minimal: one interface, two
+// backends. The triggers below consume only RelevanceResult and never care
+// which backend produced the scores.
+interface ScoreOptions {
+  timeoutS: number;
+}
+interface RelevanceResult {
+  rows: Array<{ id: string; path: string; score: number }>;
+  wallS: number;
+  anchor?: unknown; // local shared-prefix KV anchor stats (hosted: undefined)
+  cost?: number | null; // hosted usage cost when reported (local: undefined)
+}
+interface RelevanceScorer {
+  readonly backend: "local" | "jev";
+  usable(): { ok: boolean; why: string };
+  score(state: string, mems: MemoryEntry[], framing: Framing, opts: ScoreOptions): Promise<RelevanceResult>;
+}
+
+const sortRows = (mems: MemoryEntry[], yesById: Map<string, number>): Array<{ id: string; path: string; score: number }> => {
+  const byId = new Map(mems.map((m) => [m.id, m]));
+  const rows: Array<{ id: string; path: string; score: number }> = [];
+  for (const [qid, yes] of yesById) {
+    const m = byId.get(qid);
+    if (typeof yes === "number" && Number.isFinite(yes) && m) rows.push({ id: m.id, path: m.path, score: yes }); // invalid score → skipped (spec §15)
+  }
+  rows.sort((a, b) => b.score - a.score);
+  return rows;
+};
+
+// LOCAL — the reference scorer: `jev ask` CLI on the loopback logit server.
+export class LocalCliScorer implements RelevanceScorer {
+  readonly backend = "local" as const;
+  private readonly readiness = (() => {
     try {
-      writeFileSync(STATE_F, JSON.stringify(state));
-      writeFileSync(QUESTIONS_F, JSON.stringify(buildQuestions(mems, framing), null, 1));
-    } catch (e) {
-      reject(e instanceof Error ? e : new Error(String(e)));
-      return;
+      if (!statSync(JEV).isFile()) return { ok: false, why: `not a regular file: ${JEV}` };
+      accessSync(JEV, constants.X_OK);
+      return { ok: true, why: "" };
+    } catch {
+      return {
+        ok: false,
+        why: process.env.JEV_CMD
+          ? `JEV_CMD not usable (${JEV}) — it must be a regular executable file`
+          : `scorer not found: ${JEV} — install the jev skill or set JEV_CMD`,
+      };
     }
-    execFile(
-      JEV,
-      ["ask", "--state", STATE_F, "--questions", QUESTIONS_F, "--timeout", String(timeoutS)],
-      { timeout: (timeoutS + 30) * 1000, maxBuffer: 16 * 1024 * 1024 }, // hard net
-      (err, stdout) => {
-        const wallS = (Date.now() - t0) / 1000;
-        if (err) {
-          reject(new Error(`jev ask: exit=${(err as { code?: number })?.code ?? "?"} ${String(err.message).slice(0, 200)}`));
-          return;
-        }
-        try {
-          const d = JSON.parse(stdout);
-          if (d?.ok !== true) throw new Error(`ok!=true: ${JSON.stringify(d).slice(0, 200)}`);
-          const rows: Array<{ id: string; path: string; score: number }> = [];
-          const byId = new Map(mems.map((m) => [m.id, m]));
-          // The CLI returns `results` as a dict {qid: {...}} — not an array of pairs.
-          for (const [qid, r] of Object.entries(d.results ?? {}) as Array<[string, { probs?: { yes?: number } }]>) {
-            const yes = r?.probs?.yes;
-            const m = byId.get(qid);
-            if (typeof yes === "number" && m) rows.push({ id: m.id, path: m.path, score: yes });
+  })();
+
+  usable(): { ok: boolean; why: string } {
+    return this.readiness;
+  }
+
+  score(state: string, mems: MemoryEntry[], framing: Framing, opts: ScoreOptions): Promise<RelevanceResult> {
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      if (!this.readiness.ok) {
+        reject(new Error(`scorer unavailable: ${this.readiness.why}`));
+        return;
+      }
+      try {
+        writeFileSync(STATE_F, JSON.stringify(state));
+        writeFileSync(QUESTIONS_F, JSON.stringify(buildQuestions(mems, framing), null, 1));
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error(String(e)));
+        return;
+      }
+      execFile(
+        JEV,
+        ["ask", "--state", STATE_F, "--questions", QUESTIONS_F, "--timeout", String(opts.timeoutS)],
+        { timeout: (opts.timeoutS + 30) * 1000, maxBuffer: 16 * 1024 * 1024 }, // hard net
+        (err, stdout) => {
+          const wallS = (Date.now() - t0) / 1000;
+          if (err) {
+            reject(new Error(`jev ask: exit=${(err as { code?: number })?.code ?? "?"} ${String(err.message).slice(0, 200)}`));
+            return;
           }
-          rows.sort((a, b) => b.score - a.score);
-          resolve({ rows, wallS, anchor: d.anchor });
-        } catch (e) {
-          reject(e instanceof Error ? e : new Error(String(e)));
-        }
-      },
-    );
-  });
+          try {
+            const d = JSON.parse(stdout);
+            if (d?.ok !== true) throw new Error(`ok!=true: ${JSON.stringify(d).slice(0, 200)}`);
+            // The CLI returns `results` as a dict {qid: {...}} — not an array of pairs.
+            const yesById = new Map<string, number>();
+            for (const [qid, r] of Object.entries(d.results ?? {}) as Array<[string, { probs?: { yes?: number } }]>) {
+              const yes = r?.probs?.yes;
+              if (typeof yes === "number") yesById.set(qid, yes);
+            }
+            resolve({ rows: sortRows(mems, yesById), wallS, anchor: d.anchor });
+          } catch (e) {
+            reject(e instanceof Error ? e : new Error(String(e)));
+          }
+        },
+      );
+    });
+  }
+}
+
+// HOSTED JEV — the real Decisions API (spec §3; becomes the default at §22
+// step 5). Transport facts (spec AM8/AM3, measured): POST {model, state,
+// questions} to the OpenRouter ALPHA decisions endpoint (/api/v1/* 403s),
+// Bearer = OPENROUTER_API_KEY (only — no auth-store fallback in v1, spec §8),
+// answers.<qid>.noul = P(Yes). HARD TOTAL timeout via AbortSignal —
+// per-socket timeouts were measured non-binding on this endpoint.
+export class JevRemoteScorer implements RelevanceScorer {
+  readonly backend = "jev" as const;
+
+  usable(): { ok: boolean; why: string } {
+    const key = process.env.OPENROUTER_API_KEY;
+    return key && key.trim()
+      ? { ok: true, why: "" }
+      : { ok: false, why: "OPENROUTER_API_KEY not set — the hosted JEV backend needs it (or set PI_JEV_BACKEND=local)" };
+  }
+
+  async score(state: string, mems: MemoryEntry[], framing: Framing, opts: ScoreOptions): Promise<RelevanceResult> {
+    const u = this.usable();
+    if (!u.ok) throw new Error(`scorer unavailable: ${u.why}`);
+    const t0 = Date.now();
+    let resp: Awaited<ReturnType<typeof fetch>>;
+    try {
+      resp = await fetch(JEV_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        },
+        body: JSON.stringify({ model: JEV_MODEL, state, questions: buildQuestions(mems, framing) }),
+        signal: AbortSignal.timeout(opts.timeoutS * 1000), // hard TOTAL budget (queue = skip, never a retry loop)
+      });
+    } catch (e) {
+      throw new Error(`jev remote: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`);
+    }
+    const wallS = (Date.now() - t0) / 1000;
+    const text = await resp.text();
+    if (resp.status !== 200) throw new Error(`jev remote HTTP ${resp.status}: ${text.slice(0, 200)}`);
+    const d = JSON.parse(text);
+    const yesById = new Map<string, number>();
+    const answers = (d?.answers ?? {}) as Record<string, { noul?: unknown }>;
+    for (const m of mems) {
+      const noul = answers[m.id]?.noul;
+      if (typeof noul === "number") yesById.set(m.id, noul);
+    }
+    const usage = (d?.usage ?? {}) as { cost?: unknown };
+    const cost = typeof usage.cost === "number" ? usage.cost : typeof d?.cost === "number" ? d.cost : null;
+    return { rows: sortRows(mems, yesById), wallS, cost };
+  }
+}
+
+const scorer: RelevanceScorer = BACKEND === "jev" ? new JevRemoteScorer() : new LocalCliScorer();
 
 const deliver = (pi: unknown, rows: Array<{ id: string; score: number }>): void => {
   const piAny = pi as {
@@ -267,20 +367,23 @@ export default (pi: unknown): void => {
     busy = true;
     log({ start: true, trigger: "cold-start", prompt_chars: prompt.length });
     try {
-      if (!existsSync(JEV) || !existsSync(INDEX)) {
-        throw new Error(`missing: ${!existsSync(JEV) ? JEV + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
+      const ready = scorer.usable();
+      if (!ready.ok || !existsSync(INDEX)) {
+        throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
       }
       const mems = loadIndex();
-      const { rows, wallS, anchor } = await runJev(
-        prompt.slice(0, COLD_STATE_MAX_CHARS), mems, "cold", COLD_TIMEOUT_S,
+      const { rows, wallS, anchor, cost } = await scorer.score(
+        prompt.slice(0, COLD_STATE_MAX_CHARS), mems, "cold", { timeoutS: COLD_TIMEOUT_S },
       );
       if (rows.length === 0) throw new Error("0 scored rows");
       log({
         ok: true,
         trigger: "cold-start",
+        backend: scorer.backend,
         wall_s: Number(wallS.toFixed(1)),
         n: rows.length,
         anchor: anchor ?? null,
+        cost: cost ?? null,
         top5: rows.slice(0, 5).map((r) => `${r.id}:${r.score.toFixed(2)}`),
       });
       return {
@@ -332,18 +435,21 @@ export default (pi: unknown): void => {
       status("jev-relevance: scoring memories… (~15 s)");
       log({ start: true, summary_chars: summary.length });
       try {
-        if (!existsSync(JEV) || !existsSync(INDEX)) {
-          throw new Error(`missing: ${!existsSync(JEV) ? JEV + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
+        const ready = scorer.usable();
+        if (!ready.ok || !existsSync(INDEX)) {
+          throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
         }
         const mems = loadIndex();
-        const { rows, wallS, anchor } = await runJev(summary, mems, "vcc", JEV_TIMEOUT_S);
+        const { rows, wallS, anchor, cost } = await scorer.score(summary, mems, "vcc", { timeoutS: JEV_TIMEOUT_S });
         if (rows.length === 0) throw new Error("0 scored rows");
         deliver(pi, rows);
         log({
           ok: true,
+          backend: scorer.backend,
           wall_s: Number(wallS.toFixed(1)),
           n: rows.length,
           anchor: anchor ?? null,
+          cost: cost ?? null,
           top5: rows.slice(0, 5).map((r) => `${r.id}:${r.score.toFixed(2)}`),
         });
       } finally {
@@ -362,7 +468,7 @@ export default (pi: unknown): void => {
     name: "memory_relevance",
     label: "Memory relevance",
     description:
-      "Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s; no egress with a local scorer endpoint). " +
+      `Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s local, ~1 s hosted; ${scorer.backend === "jev" ? "the scoring state is sent to the hosted JEV service" : "no egress with a local scorer endpoint"}). ` +
       "Returns the FULL ranking of all memory files (sorted, graduated scores — the gradient shows where to cut). SLOW — call at most once per task, only when you suspect a memory file holds needed context and your static index lines don't tell you which. " +
       "Scores are informational only: afterwards, read whichever file(s) you choose with the read tool — nothing is injected.",
     parameters: {
@@ -384,18 +490,21 @@ export default (pi: unknown): void => {
       busy = true;
       log({ start: true, trigger: "query", question_chars: question.length });
       try {
-        if (!existsSync(JEV) || !existsSync(INDEX)) {
-          throw new Error(`missing: ${!existsSync(JEV) ? JEV + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
+        const ready = scorer.usable();
+        if (!ready.ok || !existsSync(INDEX)) {
+          throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
         }
         const mems = loadIndex();
-        const { rows, wallS, anchor } = await runJev(question, mems, "cold", COLD_TIMEOUT_S);
+        const { rows, wallS, anchor, cost } = await scorer.score(question, mems, "cold", { timeoutS: COLD_TIMEOUT_S });
         if (rows.length === 0) throw new Error("0 scored rows");
         log({
           ok: true,
           trigger: "query",
+          backend: scorer.backend,
           wall_s: Number(wallS.toFixed(1)),
           n: rows.length,
           anchor: anchor ?? null,
+          cost: cost ?? null,
           top5: rows.slice(0, 5).map((r) => `${r.id}:${r.score.toFixed(2)}`),
         });
         return {

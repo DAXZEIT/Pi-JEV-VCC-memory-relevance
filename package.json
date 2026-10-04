@@ -4,6 +4,7 @@
   "description": "Logit-scored memory relevance for the Pi coding agent — ranked hints (priors, not verdicts) over your long-term memory index, via JEV (default) or a fully local scorer",
   "license": "MIT",
   "author": "dax",
+  "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -32,5 +33,12 @@
       "./jev"
     ],
     "image": "docs/hero.png"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
   }
 }
