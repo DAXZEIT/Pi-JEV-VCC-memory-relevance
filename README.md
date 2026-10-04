@@ -89,7 +89,7 @@ Then:
      pi-jev-build-index --dir ~/.pi/agent/memory --out ~/.pi/agent/memory_index.json
    ```
 
-   (Pin the version you installed — e.g. `--package @daxzeit/pi-jev-vcc-memory-relevance@0.1.0`
+   (Pin the version you installed — for this release, e.g. `--package @daxzeit/pi-jev-vcc-memory-relevance@0.1.2`
    — to build with the same builder as your installed extension; bare `npx`
    fetches latest.)
 
@@ -128,6 +128,9 @@ The default lane scores through the hosted JEV / Decisions API
   its time budget and **skips** — the session continues without the hint.
   That skip is the *expected* behavior of the default backend, not a
   malfunction; the next trigger or the on-demand tool is the fallback.
+- **Endpoint override:** `PI_JEV_ENDPOINT` changes the remote destination.
+  It does not make scoring local or reduce egress — the scoring state follows
+  that endpoint. Treat a custom endpoint as a trusted data destination.
 - **Why hosted by default:** beyond the zero-dependency install, it is the
   higher-performing measured choice on the reference benchmark (see
   [What the experiments showed](#what-the-experiments-showed)).
@@ -248,7 +251,7 @@ The extension reads `~/.pi/agent/memory_index.json` by default
 |---|---|---|
 | `PI_JEV_BACKEND` | `jev` | `jev` (hosted) or `local` |
 | `PI_JEV_MODEL` | `typesafe/jev-1.13` | hosted model id (pinned) |
-| `PI_JEV_ENDPOINT` | OpenRouter decisions API | hosted endpoint override |
+| `PI_JEV_ENDPOINT` | OpenRouter decisions API | hosted endpoint override; changing it changes the egress destination |
 | `OPENROUTER_API_KEY` | — | the only credential the hosted lane reads |
 | `JEV_CMD` | `~/.local/bin/jev` | local scorer CLI (trusted-executable boundary) |
 | `JEV_MEMORY_INDEX` | `~/.pi/agent/memory_index.json` | index path |

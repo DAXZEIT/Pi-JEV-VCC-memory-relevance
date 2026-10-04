@@ -66,9 +66,30 @@ jobs:
 
       - name: pack hygiene (no pyc, no caches)
         run: |
-          npm pack >/dev/null 2>&1
-          if tar -tzf daxzeit-pi-jev-vcc-memory-relevance-*.tgz | grep -E "\.pyc|__pycache__"; then
+          tarball=$(npm pack --silent 2>/dev/null | tail -n 1)
+          if tar -tzf "$tarball" | grep -E "\\.pyc|__pycache__"; then
             echo "FAIL: cache artifacts in tarball"
             exit 1
           fi
           echo "pack clean — tarball artifact verified directly"
+
+      - name: clean-room install from packed tarball
+        run: |
+          set -e
+          tarball=$(npm pack --silent 2>/dev/null | tail -n 1)
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          cd "$tmp"
+          npm init -y >/dev/null 2>&1
+          npm install "$GITHUB_WORKSPACE/$tarball" --legacy-peer-deps
+          node --input-type=module -e '
+            import { readFileSync, existsSync } from "node:fs";
+            const root = "node_modules/@daxzeit/pi-jev-vcc-memory-relevance";
+            const pkg = JSON.parse(readFileSync(root + "/package.json", "utf8"));
+            if (pkg.name !== "@daxzeit/pi-jev-vcc-memory-relevance") throw new Error("wrong package name");
+            if (!existsSync(root + "/jev-relevance.ts")) throw new Error("extension missing");
+            if (!existsSync(root + "/scripts/build-index.mjs")) throw new Error("index builder missing");
+            if (pkg.pi?.extensions?.[0] !== "./jev-relevance.ts") throw new Error("Pi extension metadata missing");
+            if (pkg.pi?.skills?.[0] !== "./jev") throw new Error("Pi skill metadata missing");
+            console.log("clean-room package install OK");
+          '
