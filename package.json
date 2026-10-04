@@ -1,0 +1,36 @@
+{
+  "name": "@daxzeit/pi-jev-vcc-memory-relevance",
+  "version": "0.1.0",
+  "description": "Logit-scored memory relevance for the Pi coding agent — ranked hints (priors, not verdicts) over your long-term memory index, via JEV (default) or a fully local scorer",
+  "license": "MIT",
+  "author": "dax",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "memory",
+    "relevance",
+    "jev"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DAXZEIT/Pi-JEV-VCC-memory-relevance.git"
+  },
+  "bugs": "https://github.com/DAXZEIT/Pi-JEV-VCC-memory-relevance/issues",
+  "homepage": "https://github.com/DAXZEIT/Pi-JEV-VCC-memory-relevance#readme",
+  "files": [
+    "jev-relevance.ts",
+    "jev",
+    "scripts",
+    "docs",
+    "examples"
+  ],
+  "pi": {
+    "extensions": [
+      "./jev-relevance.ts"
+    ],
+    "skills": [
+      "./jev"
+    ],
+    "image": "docs/hero.png"
+  }
+}
