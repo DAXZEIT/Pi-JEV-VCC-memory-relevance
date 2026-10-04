@@ -910,25 +910,43 @@ SCORE → RETRIEVE → INJECT
 
 ## 22. Implementation order
 
-0. [AM2] Measure the hosted JEV latency distribution (N calls, including
+Status 2026-10-04 — ✅ done and verified (commit refs below), ⏳ remaining.
+
+0. ✅ [AM2] Measure the hosted JEV latency distribution (N calls, including
    queue detection) and document the expected skip-during-queue behavior in
    the README. This is a product datum, not an implementation detail — it
-   determines what the default backend is *expected* to do.
-1. Add `package.json` with Pi package metadata.
-1b. [AM7] Port the index builder to dependency-free TypeScript
+   determines what the default backend is *expected* to do. (2026-10-03,
+   3 clean windows; README carries the wording.)
+1. ✅ Add `package.json` with Pi package metadata. (`0f3d68c` — pack dry-run
+   31 files, `pi -e` discovery smoke: tool + skill resolved.)
+1b. ✅ [AM7] Port the index builder to dependency-free TypeScript
     (`scripts/build-index.mjs`) so the hosted lane can generate an index
     without Python; `build-index.py` stays as the curation pipeline.
-2. Introduce the minimal internal `RelevanceScorer` abstraction.
-3. Move the current local CLI invocation behind `LocalCliScorer`.
-4. Add `JevRemoteScorer` in TypeScript.
-5. Make hosted JEV the default backend.
-6. Add backend/model configuration.
-7. Update README installation and privacy sections.
-8. Run local regression suite.
-9. Run a clean hosted-mode installation test without Python.
-10. `npm pack --dry-run`.
-11. Publish the package.
-12. Verify `pi install npm:@daxzeit/pi-jev-vcc-memory-relevance` on a clean environment.
+    (`4b37c1e` — byte-parity oracle vs Python: fixture + real dir, 26 entries.)
+2. ✅ Introduce the minimal internal `RelevanceScorer` abstraction. (`79dc982`)
+3. ✅ Move the current local CLI invocation behind `LocalCliScorer`. (`79dc982`)
+4. ✅ Add `JevRemoteScorer` in TypeScript. (`79dc982` — live unit: directional
+   oracle 0.8/0.01, 1.3 s, $0.0000202; no-key skip clean.)
+5. ✅ Make hosted JEV the default backend. (`2acef3d` — E2E: no-key clean skip,
+   `PI_JEV_BACKEND=local` cold start scored. AM10 per-backend noise-floor
+   wording shipped in the same commit.)
+6. ✅ Add backend/model configuration. (`79dc982` — `PI_JEV_BACKEND`/
+   `PI_JEV_MODEL`/`PI_JEV_ENDPOINT` wired.)
+7. ✅ Update README installation and privacy sections. (`2acef3d` — §19
+   journey, AM2/AM5/AM9/AM11, ADV artifacts preserved, `pi-jev-build-index`
+   bin, `prepack` __pycache__ hook.)
+8. ✅ Run local regression suite. (Continuous: `tsc --strict` clean, `jev
+   selftest` 6/6 with provenance shas, local+hosted E2E after each step.)
+9. ✅ Run a clean hosted-mode installation test without Python. (2026-10-04:
+   temp `PI_CODING_AGENT_DIR`, `pi install <path>`, `JEV_CMD=/nonexistent`
+   (never probed — AM8), `OPENROUTER_API_KEY` only credential → cold start
+   scored 25 entries in 2.4 s, $0.000133, hint `custom_message display:false`
+   present before the first assistant turn with the hosted noise-floor
+   wording. Note: tested from a local path source; the npm source variant
+   is step 12.)
+10. ⏳ `npm pack --dry-run`. (Continuously green — 32 files, zero pyc.)
+11. ⏳ Publish the package.
+12. ⏳ Verify `pi install npm:@daxzeit/pi-jev-vcc-memory-relevance` on a clean environment.
 
 ---
 
