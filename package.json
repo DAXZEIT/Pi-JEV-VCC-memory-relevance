@@ -25,6 +25,9 @@
     "docs",
     "examples"
   ],
+  "bin": {
+    "pi-jev-build-index": "./scripts/build-index.mjs"
+  },
   "pi": {
     "extensions": [
       "./jev-relevance.ts"
@@ -35,7 +38,8 @@
     "image": "docs/hero.png"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "prepack": "rm -rf jev/protocol/__pycache__ jev/protocol/common/__pycache__"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

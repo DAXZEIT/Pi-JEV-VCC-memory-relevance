@@ -41,10 +41,10 @@
  * IS the metric), failure = skip + log, never a throw into the session.
  *
  * Backends (spec §2/§4) — one RelevanceScorer interface, two implementations:
- *   local (default until §22 step 5): `jev ask` CLI on the loopback logit
+ *   jev (DEFAULT): the hosted Decisions API, model pinned via PI_JEV_MODEL
+ *     (default typesafe/jev-1.13), OPENROUTER_API_KEY only.
+ *   local (PI_JEV_BACKEND=local): `jev ask` CLI on the loopback logit
  *     server — zero egress. JEV_CMD is probed only when this backend runs.
- *   jev (PI_JEV_BACKEND=jev): the hosted Decisions API, model pinned via
- *     PI_JEV_MODEL (default typesafe/jev-1.13), OPENROUTER_API_KEY only.
  *
  * Requires: a scorer CLI implementing the `ask` contract for the local lane
  * (see docs/scorer-contract.md) and a memory index JSON
@@ -74,9 +74,9 @@ type PiOn = { on?: (event: string, handler: (event?: any, ctx?: any) => unknown)
 // argument and runs with the user's privileges. Probed only when the local
 // backend is selected (spec AM8: hosted mode must not require or probe it).
 const JEV = process.env.JEV_CMD ?? path.join(os.homedir(), ".local", "bin", "jev");
-// Backend selection (spec §2.3/§9). Default stays "local" until the hosted
-// lane is proven — spec §22 step 5 flips the default to "jev" (+ README).
-const BACKEND = (process.env.PI_JEV_BACKEND ?? "local").toLowerCase();
+// Backend selection (spec §2.3/§9). Public default: hosted JEV (§22 step 5) —
+// zero-dependency install; the local lane is the advanced zero-egress option.
+const BACKEND = (process.env.PI_JEV_BACKEND ?? "jev").toLowerCase();
 const JEV_MODEL = process.env.PI_JEV_MODEL ?? "typesafe/jev-1.13"; // pinned, never a floating alias (spec §14)
 const JEV_ENDPOINT = process.env.PI_JEV_ENDPOINT ?? "https://openrouter.ai/api/alpha/decisions"; // alpha path (spec AM8)
 const INDEX = process.env.JEV_MEMORY_INDEX ?? path.join(os.homedir(), ".pi", "agent", "memory_index.json");
@@ -327,10 +327,13 @@ const buildRelevanceBlock = (rows: Array<{ id: string; score: number }>, limit =
   // (lazy retrieval — nothing is injected). This is RENDER, not protocol:
   // rewording it breaks no metric (the frozen protocol wordings are the JEV
   // questions in FRAMINGS, not this line).
+  // Noise-floor wording is per-backend (spec AM10): local raw logits show a
+  // ~0.000-0.001 floor; hosted JEV quantizes scores to 2 decimals (floor ≈ 0.00-0.01).
+  const floor = scorer.backend === "jev" ? "0.00-0.01" : "0.000-0.001";
   const lines = rows.slice(0, limit).map((r) => `${r.id}.md: ${r.score.toFixed(3)}`);
   return (
     `<memory_relevance>\n` +
-    `Potentially useful memories for the current task (local relevance scores, informational only — 0.000-0.001 is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
+    `Potentially useful memories for the current task (relevance scores from the ${scorer.backend === "jev" ? "hosted JEV" : "local"} scorer, informational only — ${floor} is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
     lines.join("\n") +
     `\n</memory_relevance>`
   );
