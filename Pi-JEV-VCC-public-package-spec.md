@@ -910,7 +910,7 @@ SCORE → RETRIEVE → INJECT
 
 ## 22. Implementation order
 
-Status 2026-10-04 — ✅ done and verified (commit refs below), ⏳ remaining.
+Status 2026-10-04 — ALL DONE. Published `@daxzeit/pi-jev-vcc-memory-relevance@0.1.0`.
 
 0. ✅ [AM2] Measure the hosted JEV latency distribution (N calls, including
    queue detection) and document the expected skip-during-queue behavior in
@@ -944,9 +944,18 @@ Status 2026-10-04 — ✅ done and verified (commit refs below), ⏳ remaining.
    present before the first assistant turn with the hosted noise-floor
    wording. Note: tested from a local path source; the npm source variant
    is step 12.)
-10. ⏳ `npm pack --dry-run`. (Continuously green — 32 files, zero pyc.)
-11. ⏳ Publish the package.
-12. ⏳ Verify `pi install npm:@daxzeit/pi-jev-vcc-memory-relevance` on a clean environment.
+10. ✅ `npm pack --dry-run`. (Green — 32 files, zero pyc; CI enforces it on
+    the tarball artifact directly, Node 20/22/24.)
+11. ✅ Publish the package. (2026-10-04 — `@daxzeit/pi-jev-vcc-memory-relevance@0.1.0`,
+    PUT 200, public access; ~4 min registry propagation before the first GET.)
+12. ✅ Verify `pi install npm:@daxzeit/pi-jev-vcc-memory-relevance` on a clean environment.
+    (2026-10-04: fresh agent dir, real npm source, no Python,
+    `JEV_CMD=/nonexistent`, `OPENROUTER_API_KEY` only → cold start hosted
+    scored 25 entries in 2.6 s ($0.000133, top-1 jev-typesafe 0.33 on a
+    relevance question), session continued normally. Failure matrix spot-
+    checks: no key → clean skip; invalid endpoint → clean skip; invalid
+    `PI_JEV_BACKEND` → config-error + disabled. Repo public since
+    2026-10-04; CI green on the publish commit.)
 
 ---
 
