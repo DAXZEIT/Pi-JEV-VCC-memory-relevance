@@ -1,6 +1,6 @@
 {
   "name": "@daxzeit/pi-jev-vcc-memory-relevance",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Logit-scored memory relevance for the Pi coding agent — ranked hints (priors, not verdicts) over your long-term memory index, via JEV (default) or a fully local scorer",
   "license": "MIT",
   "author": "dax",
@@ -27,6 +27,18 @@
   ],
   "bin": {
     "pi-jev-build-index": "./scripts/build-index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@sting8k/pi-vcc": "*"
+  },
+  "peerDependenciesMeta": {
+    "@sting8k/pi-vcc": {
+      "optional": true
+    }
   },
   "pi": {
     "extensions": [
