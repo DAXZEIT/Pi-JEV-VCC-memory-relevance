@@ -133,7 +133,7 @@ function fnmatchRegex(pat) {
       i++;
     }
   }
-  return new RegExp('^(?s:' + re + ')$');
+  return new RegExp('^' + re + '$', 's'); // dotAll flag (ES2018) — NOT the inline (?s:...) group (ES2025, breaks on Node ≤ 22)
 }
 
 function listMdFiles(dir) {

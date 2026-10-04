@@ -998,3 +998,19 @@ section contents. Three wording fixes applied inline: the §8 auth-store
 sentence (last residual contradiction with [AM5]), the [AM7] tense (the
 TS builder is future work, step 1b), and the [AM11] cross-reference
 (§18 requires the recording, it does not record).
+
+Post-script 2 — 2026-10-04 (external review #2, GPT Luna, HEAD `1257068`,
+claims re-verified against source before acting): 3 real defects found and
+fixed — (1) `build-index.mjs` used the ES2025 inline regex group `(?s:…)`
+(works on Node ≥ 23, SyntaxError on Node ≤ 22 — the advertised floor;
+the parity suite had genuinely passed, but only on Node 26): fixed to the
+ES2018 `dotAll` constructor flag, parity re-proven on 7 combinations;
+(2) `jev/jev` hardcoded the author's GGUF path: now `JEV_GGUF_PATH` env,
+`jev check` template check skips gracefully when unset; (3) an invalid
+`PI_JEV_BACKEND` silently selected the local backend: now a config-error
+log + scoring disabled, never a silent fallback. Plus hardening: score
+range guard [0,1] in the normalizer, README cost anchored to the two real
+measurements ($0.00002 minimal / $0.00013 25-memory cold start), npx
+version-pin note, and a minimal CI workflow (typecheck + builder parity
+vs the Python oracle + pack hygiene, Node 20/22/24) — the regex bug is
+exactly what it would have caught.

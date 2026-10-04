@@ -167,7 +167,7 @@ const sortRows = (mems: MemoryEntry[], yesById: Map<string, number>): Array<{ id
   const rows: Array<{ id: string; path: string; score: number }> = [];
   for (const [qid, yes] of yesById) {
     const m = byId.get(qid);
-    if (typeof yes === "number" && Number.isFinite(yes) && m) rows.push({ id: m.id, path: m.path, score: yes }); // invalid score → skipped (spec §15)
+    if (typeof yes === "number" && Number.isFinite(yes) && yes >= 0 && yes <= 1 && m) rows.push({ id: m.id, path: m.path, score: yes }); // invalid score (incl. outside [0,1]) → skipped (spec §15)
   }
   rows.sort((a, b) => b.score - a.score);
   return rows;
@@ -288,7 +288,21 @@ export class JevRemoteScorer implements RelevanceScorer {
   }
 }
 
-const scorer: RelevanceScorer = BACKEND === "jev" ? new JevRemoteScorer() : new LocalCliScorer();
+const scorer: RelevanceScorer | null =
+  BACKEND === "jev" ? new JevRemoteScorer() : BACKEND === "local" ? new LocalCliScorer() : null;
+if (!scorer) {
+  // Invalid config must NEVER silently select a backend (a typo falling back
+  // to local would execute JEV_CMD; falling back to hosted would egress).
+  log({
+    event: "config-error",
+    var: "PI_JEV_BACKEND",
+    value: process.env.PI_JEV_BACKEND ?? null,
+    expected: "jev|local",
+    effect: "relevance scoring disabled",
+  });
+}
+const scorerUnusable = { ok: false, why: 'invalid PI_JEV_BACKEND (expected "jev" or "local") — relevance scoring disabled' };
+const scorerBackend = (): "local" | "jev" => scorer?.backend ?? "jev"; // post-score only; "jev" is the public default wording
 
 const deliver = (pi: unknown, rows: Array<{ id: string; score: number }>): void => {
   const piAny = pi as {
@@ -329,11 +343,11 @@ const buildRelevanceBlock = (rows: Array<{ id: string; score: number }>, limit =
   // questions in FRAMINGS, not this line).
   // Noise-floor wording is per-backend (spec AM10): local raw logits show a
   // ~0.000-0.001 floor; hosted JEV quantizes scores to 2 decimals (floor ≈ 0.00-0.01).
-  const floor = scorer.backend === "jev" ? "0.00-0.01" : "0.000-0.001";
+  const floor = scorerBackend() === "jev" ? "0.00-0.01" : "0.000-0.001";
   const lines = rows.slice(0, limit).map((r) => `${r.id}.md: ${r.score.toFixed(3)}`);
   return (
     `<memory_relevance>\n` +
-    `Potentially useful memories for the current task (relevance scores from the ${scorer.backend === "jev" ? "hosted JEV" : "local"} scorer, informational only — ${floor} is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
+    `Potentially useful memories for the current task (relevance scores from the ${scorerBackend() === "jev" ? "hosted JEV" : "local"} scorer, informational only — ${floor} is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
     lines.join("\n") +
     `\n</memory_relevance>`
   );
@@ -370,19 +384,19 @@ export default (pi: unknown): void => {
     busy = true;
     log({ start: true, trigger: "cold-start", prompt_chars: prompt.length });
     try {
-      const ready = scorer.usable();
+      const ready = scorer?.usable() ?? scorerUnusable;
       if (!ready.ok || !existsSync(INDEX)) {
         throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
       }
       const mems = loadIndex();
-      const { rows, wallS, anchor, cost } = await scorer.score(
+      const { rows, wallS, anchor, cost } = await scorer!.score(
         prompt.slice(0, COLD_STATE_MAX_CHARS), mems, "cold", { timeoutS: COLD_TIMEOUT_S },
       );
       if (rows.length === 0) throw new Error("0 scored rows");
       log({
         ok: true,
         trigger: "cold-start",
-        backend: scorer.backend,
+        backend: scorer!.backend,
         wall_s: Number(wallS.toFixed(1)),
         n: rows.length,
         anchor: anchor ?? null,
@@ -438,17 +452,17 @@ export default (pi: unknown): void => {
       status("jev-relevance: scoring memories… (~15 s)");
       log({ start: true, summary_chars: summary.length });
       try {
-        const ready = scorer.usable();
+        const ready = scorer?.usable() ?? scorerUnusable;
         if (!ready.ok || !existsSync(INDEX)) {
           throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
         }
         const mems = loadIndex();
-        const { rows, wallS, anchor, cost } = await scorer.score(summary, mems, "vcc", { timeoutS: JEV_TIMEOUT_S });
+        const { rows, wallS, anchor, cost } = await scorer!.score(summary, mems, "vcc", { timeoutS: JEV_TIMEOUT_S });
         if (rows.length === 0) throw new Error("0 scored rows");
         deliver(pi, rows);
         log({
           ok: true,
-          backend: scorer.backend,
+          backend: scorer!.backend,
           wall_s: Number(wallS.toFixed(1)),
           n: rows.length,
           anchor: anchor ?? null,
@@ -471,7 +485,7 @@ export default (pi: unknown): void => {
     name: "memory_relevance",
     label: "Memory relevance",
     description:
-      `Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s local, ~1 s hosted; ${scorer.backend === "jev" ? "the scoring state is sent to the hosted JEV service" : "no egress with a local scorer endpoint"}). ` +
+      `Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s local, ~1 s hosted; ${scorerBackend() === "jev" ? "the scoring state is sent to the hosted JEV service" : "no egress with a local scorer endpoint"}). ` +
       "Returns the FULL ranking of all memory files (sorted, graduated scores — the gradient shows where to cut). SLOW — call at most once per task, only when you suspect a memory file holds needed context and your static index lines don't tell you which. " +
       "Scores are informational only: afterwards, read whichever file(s) you choose with the read tool — nothing is injected.",
     parameters: {
@@ -493,17 +507,17 @@ export default (pi: unknown): void => {
       busy = true;
       log({ start: true, trigger: "query", question_chars: question.length });
       try {
-        const ready = scorer.usable();
+        const ready = scorer?.usable() ?? scorerUnusable;
         if (!ready.ok || !existsSync(INDEX)) {
           throw new Error(`missing: ${!ready.ok ? ready.why + " " : ""}${!existsSync(INDEX) ? INDEX : ""}`);
         }
         const mems = loadIndex();
-        const { rows, wallS, anchor, cost } = await scorer.score(question, mems, "cold", { timeoutS: COLD_TIMEOUT_S });
+        const { rows, wallS, anchor, cost } = await scorer!.score(question, mems, "cold", { timeoutS: COLD_TIMEOUT_S });
         if (rows.length === 0) throw new Error("0 scored rows");
         log({
           ok: true,
           trigger: "query",
-          backend: scorer.backend,
+          backend: scorer!.backend,
           wall_s: Number(wallS.toFixed(1)),
           n: rows.length,
           anchor: anchor ?? null,

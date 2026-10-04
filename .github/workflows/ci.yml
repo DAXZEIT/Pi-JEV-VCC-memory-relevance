@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: builder — fixture parity vs the Python oracle
+        run: |
+          set -e
+          F=/tmp/idx-fixture
+          mkdir -p "$F"
+          printf '# Alpha Heading\nbody\n' > "$F/alpha.md"
+          printf '> quote first\n# Beta Heading\nbody\n' > "$F/beta-quote.md"
+          printf -- '---\n# Gamma Heading\nbody\n' > "$F/gamma-dash.md"
+          printf '# Café 中文 éèê\nbody\n' > "$F/utf8-cjk.md"
+          printf '' > "$F/empty.md"
+          python3 -c "open('$F/longdesc.md','w').write('# ' + 'x'*300 + '\nbody\n')"
+          printf 'no heading here\nplain lines\n' > "$F/noheading.md"
+          printf '# Unreferenced\nbody\n' > "$F/zeta.md"
+          cat > "$F/INDEX.md" <<'EOF'
+          # Memory Index
+
+          - Deploy runbook, wrapped over
+            two lines → `memory/alpha.md`
+          - Two refs in one bullet `memory/longdesc.md`
+            and `memory/utf8-cjk.md` here
+          - Beta → `memory/beta-quote.md`
+
+          # Another Section
+
+          - Gamma `memory/gamma-dash.md` trailing
+          EOF
+          chk() {
+            python3 scripts/build-index.py --dir "$F" --out /tmp/py.json "$@" >/dev/null 2>&1; pe=$?
+            node   scripts/build-index.mjs --dir "$F" --out /tmp/js.json "$@" >/dev/null 2>&1; je=$?
+            [ "$pe" = "$je" ] || { echo "exit mismatch ($pe vs $je) for: $*"; exit 1; }
+            if [ "$pe" = 0 ]; then cmp /tmp/py.json /tmp/js.json || { echo "output mismatch for: $*"; exit 1; }; fi
+            echo "parity OK (exit $pe): $*"
+          }
+          chk
+          chk --index-file "$F/INDEX.md"
+          chk --index-file "$F/INDEX.md" --exclude '[ab]*.md'
+          chk --index-file "$F/INDEX.md" --exclude zeta.md --exclude longdesc.md
+          chk --exclude 'e*.md'
+          chk --exclude 'draft-*'
+
+      - name: pack hygiene (no pyc, no caches)
+        run: |
+          npm pack --dry-run 2>&1 | grep -v "run rm -rf" > /tmp/pack.txt
+          ! grep -E "\.pyc|__pycache__" /tmp/pack.txt && echo "pack clean"

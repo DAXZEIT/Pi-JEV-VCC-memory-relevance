@@ -36,7 +36,10 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent
 PROTOCOL_DIR = SKILL_DIR / "protocol"
 TEMPLATE_PATH = SKILL_DIR / "template_qwen38.j2"
-GGUF_PATH = Path("/home/dax/AI/qwen38-build/Qwen3.8-27B-UD-Q4_K_XL.gguf")
+# GGUF used ONLY by `jev check`'s template-freshness comparison. Public
+# package: no default path — set JEV_GGUF_PATH to your local GGUF; unset or
+# missing → the template check skips gracefully (jev ask never needs it).
+GGUF_PATH = os.environ.get("JEV_GGUF_PATH")
 CANARIS_DIR = SKILL_DIR / "canaris"
 DEFAULT_SERVER = "http://127.0.0.1:5000"
 DEFAULT_MODEL_LOCAL = "local/Qwen3.8-27B-UD-Q4_K_XL"
@@ -368,6 +371,11 @@ def cmd_check(args):
     # 2) fraicheur du template vs GGUF (extraction ~6 s)
     if args.no_template:
         report["checks"]["template"] = {"skipped": True}
+    elif not GGUF_PATH or not Path(GGUF_PATH).is_file():
+        report["checks"]["template"] = {
+            "skipped": True,
+            "reason": "JEV_GGUF_PATH unset or file missing — template freshness check unavailable (set JEV_GGUF_PATH to your local GGUF)",
+        }
     else:
         try:
             from gguf import GGUFReader

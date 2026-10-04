@@ -89,6 +89,10 @@ Then:
      pi-jev-build-index --dir ~/.pi/agent/memory --out ~/.pi/agent/memory_index.json
    ```
 
+   (Pin the version you installed — e.g. `--package @daxzeit/pi-jev-vcc-memory-relevance@0.1.0`
+   — to build with the same builder as your installed extension; bare `npx`
+   fetches latest.)
+
    Then **review the descriptions** — the scorer ranks descriptions, not
    contents, so ranking quality is exactly description quality (see
    [Memory index](#memory-index)).
@@ -114,9 +118,10 @@ The default lane scores through the hosted JEV / Decisions API
   which shifts the ranking, which changes agent behavior. Override with
   `PI_JEV_MODEL` for experimentation; the package default stays deterministic.
 - **Cost:** each trigger sends **one fanned-out request** — every memory
-  question is evaluated in parallel on the same state. Measured cost is
-  ≈ **$0.00002–0.0002 per trigger** (a few hundred input tokens, output
-  free); an interactive session costs micro-dollars.
+  question is evaluated in parallel on the same state. Measured on the
+  reference setup: **≈ $0.00002** for a minimal state, **≈ $0.00013** for a
+  25-memory cold start (output is free) — an interactive session costs
+  micro-dollars. Actual cost scales with payload size and provider pricing.
 - **Latency & the queue:** typical latency is ~0.7–1.3 s. A capacity queue of
   180–270 s was documented once (2026-09-28) and has **not been reproduced**
   across ~2000 calls since. If such an event ever recurs, the trigger hits
@@ -175,7 +180,10 @@ native-logit yes/no CLI following the
 [simple-jev](https://github.com/featherless-ai/simple-jev) protocol, scoring
 against a llama-server-style endpoint (default `127.0.0.1:5000`, override
 with `--server`). You need a local GGUF served with logprobs enabled (the
-reference setup is a Qwen 3.8 27B quant). `jev selftest` runs directional
+reference setup is a Qwen 3.8 27B quant). `jev check` compares the vendored
+chat template against your GGUF — set `JEV_GGUF_PATH` to enable that check
+(unset or missing, it skips gracefully; `jev ask` never needs it).
+`jev selftest` runs directional
 canaries only — it validates protocol direction, **not** calibration or
 general accuracy. The CLI also has an optional `--backend jev` mode (hosted),
 which reads `OPENROUTER_API_KEY` then Pi's auth store as a fallback.
