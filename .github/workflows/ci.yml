@@ -18,7 +18,9 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - run: npm ci
+      # --legacy-peer-deps: same semantics pi uses to install packages (peer
+      # declarations are metadata; the host provides them at runtime).
+      - run: npm ci --legacy-peer-deps
 
       - run: npm run typecheck
 
