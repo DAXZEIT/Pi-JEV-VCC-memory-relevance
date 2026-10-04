@@ -64,5 +64,9 @@ jobs:
 
       - name: pack hygiene (no pyc, no caches)
         run: |
-          npm pack --dry-run 2>&1 | grep -v "run rm -rf" > /tmp/pack.txt
-          ! grep -E "\.pyc|__pycache__" /tmp/pack.txt && echo "pack clean"
+          npm pack >/dev/null 2>&1
+          if tar -tzf daxzeit-pi-jev-vcc-memory-relevance-*.tgz | grep -E "\.pyc|__pycache__"; then
+            echo "FAIL: cache artifacts in tarball"
+            exit 1
+          fi
+          echo "pack clean — tarball artifact verified directly"
