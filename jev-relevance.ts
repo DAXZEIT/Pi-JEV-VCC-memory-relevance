@@ -302,7 +302,7 @@ if (!scorer) {
   });
 }
 const scorerUnusable = { ok: false, why: 'invalid PI_JEV_BACKEND (expected "jev" or "local") — relevance scoring disabled' };
-const scorerBackend = (): "local" | "jev" => scorer?.backend ?? "jev"; // post-score only; "jev" is the public default wording
+const scorerBackend = (): "local" | "jev" | "disabled" => scorer?.backend ?? "disabled";
 
 const deliver = (pi: unknown, rows: Array<{ id: string; score: number }>): void => {
   const piAny = pi as {
@@ -343,11 +343,13 @@ const buildRelevanceBlock = (rows: Array<{ id: string; score: number }>, limit =
   // questions in FRAMINGS, not this line).
   // Noise-floor wording is per-backend (spec AM10): local raw logits show a
   // ~0.000-0.001 floor; hosted JEV quantizes scores to 2 decimals (floor ≈ 0.00-0.01).
-  const floor = scorerBackend() === "jev" ? "0.00-0.01" : "0.000-0.001";
+  const backend = scorerBackend();
+  const floor = backend === "jev" ? "0.00-0.01" : backend === "local" ? "0.000-0.001" : "n/a";
+  const scorerName = backend === "jev" ? "hosted JEV" : backend === "local" ? "local" : "disabled";
   const lines = rows.slice(0, limit).map((r) => `${r.id}.md: ${r.score.toFixed(3)}`);
   return (
     `<memory_relevance>\n` +
-    `Potentially useful memories for the current task (relevance scores from the ${scorerBackend() === "jev" ? "hosted JEV" : "local"} scorer, informational only — ${floor} is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
+    `Potentially useful memories for the current task (relevance scores from the ${scorerName} scorer, informational only — ${floor} is the noise floor, skip those; anything above is a hint you can verify by reading, weighted by score, not a verdict):\n` +
     lines.join("\n") +
     `\n</memory_relevance>`
   );
@@ -485,7 +487,7 @@ export default (pi: unknown): void => {
     name: "memory_relevance",
     label: "Memory relevance",
     description:
-      `Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s local, ~1 s hosted; ${scorerBackend() === "jev" ? "the scoring state is sent to the hosted JEV service" : "no egress with a local scorer endpoint"}). ` +
+      `Score your long-term memory files (e.g. ~/.pi/agent/memory/*.md) for relevance to a question YOU formulate, via a logit-level scorer (~15-35 s local, ~1 s hosted; ${scorerBackend() === "jev" ? "the scoring state is sent to the hosted JEV service" : scorerBackend() === "local" ? "no third-party egress with a local scorer endpoint" : "scoring is disabled because PI_JEV_BACKEND is invalid"}). ` +
       "Returns the FULL ranking of all memory files (sorted, graduated scores — the gradient shows where to cut). SLOW — call at most once per task, only when you suspect a memory file holds needed context and your static index lines don't tell you which. " +
       "Scores are informational only: afterwards, read whichever file(s) you choose with the read tool — nothing is injected.",
     parameters: {
