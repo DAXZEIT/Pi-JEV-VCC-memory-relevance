@@ -119,8 +119,11 @@ def generate_desc_en(slug: str, context: str, llm_url: str) -> str | None:
         "for a memory routing system. Reply with the sentence only, no quotes.\n"
         f"Slug: {slug}\n{context[:220]}"
     )
+    # 1024, not 300: thinking models (e.g. Qwen3.8 local) spend most of the
+    # budget on reasoning_content before the one-sentence answer; at 300 the
+    # answer is truncated to empty content and the caller falls back to FR.
     body = json.dumps(
-        {"model": llm_model, "temperature": 0, "max_tokens": 300,
+        {"model": llm_model, "temperature": 0, "max_tokens": 1024,
          "messages": [{"role": "user", "content": prompt}]}
     ).encode()
     req = urllib.request.Request(
