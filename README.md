@@ -230,15 +230,24 @@ The scorer receives **`desc_en` (the description), never the file contents**.
 Good descriptions matter. Garbage descriptions produce garbage priors.
 
 - `scripts/build-index.py` (shipped as the `pi-jev-build-index` bin) builds
-  the index with **Python 3 stdlib only** — it derives a first-draft
-  description from each file's first heading and marks entries
-  `"desc_src": "derived"` for your review. Curated descriptions survive
-  regeneration: if `--out` already exists, the `desc_en`/`desc_src` of every
-  matching id are preserved (new files get the derived first draft, deleted
-  files drop out; `--no-preserve` forces a fresh pass).
-- `--index-file` attaches trigger lines from an AGENTS.md-style static index
-  as `index_line` context (curation only — the extension ignores it at
-  scoring time).
+  the index with **Python 3 stdlib only**, in two modes:
+  - **glob mode** (default): entries = every `.md` under `--dir` (minus
+    `--exclude`). First-draft `desc_en` from each file's first heading, for
+    review.
+  - **gate mode** (`--gate --index-file FILE`): entries = the
+    `memory/<slug>.md` references in the file's `### Index` section — the
+    static index is the single source of truth, unreferenced files are
+    reported as orphans (below the routing threshold by design), refs to
+    missing files abort the run. Index cap: 42 entries (warning beyond).
+  Curated descriptions survive regeneration: if `--out` already exists,
+  the `desc_en`/`desc_src` of every matching id are preserved (new entries
+  get the first draft, deleted files drop out; `--no-preserve` forces a
+  fresh pass). New entries can get LLM-generated `desc_en` via `--llm`
+  (defaults to the local scorer on `127.0.0.1:5000` — zero egress, a remote
+  URL is never contacted unless given explicitly). `--check` verifies
+  without writing (dead refs, out-of-sync or corrupt `--out` → exit 1). The
+  `source` field fingerprints the mode — a run warns if the existing `--out`
+  was written by the other mode.
 - Tip: exclude append-only hypothesis/incident logs from the index
   (`--exclude`) — only durable-fact memories should be scored.
 

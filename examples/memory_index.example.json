@@ -20,5 +20,6 @@
       "desc_en": "How the user works: language, tooling preferences, workflow conventions.",
       "desc_src": "derived"
     }
-  ]
+  ],
+  "source": "derived by build-index.py (glob mode) from --dir/*.md (minus --exclude) — do not hand-edit id/path/index_line; desc_en is curated or derived and preserved across regenerations; regenerate to update"
 }
