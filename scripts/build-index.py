@@ -12,16 +12,20 @@ Fields (see examples/memory_index.example.json):
                derives a start from the first markdown heading; the
                measured setup rewrites every desc_en by hand (one English
                line) before scoring — the ranking quality is exactly the
-               curation quality.
+               curation quality. Curated descriptions are PRESERVED across
+               regenerations: if --out already exists, the desc_en/desc_src
+               of every entry whose id matches is kept (new files get the
+               derived first draft, deleted files drop out).
   desc_src   = "derived" (script only) or "curated" (human reviewed).
 
 Usage:
   build-index.py --dir ~/.pi/agent/memory --out ~/.pi/agent/memory_index.json \
       [--index-file ~/.pi/agent/AGENTS.md] \
-      [--exclude error_log.md] [--exclude 'draft-*']
+      [--exclude error_log.md] [--exclude 'draft-*'] [--no-preserve]
 
 After generation: review desc_en (rewrite it in English), optionally
 index_line, and flip desc_src to "curated" on the entries you touched.
+--no-preserve forces a fresh derived pass over the whole index.
 
 Tip: exclude append-only hypothesis/incident logs from the index — only
 long-term durable-fact memories should be scored.
@@ -34,6 +38,10 @@ import re
 import sys
 
 DESC_MAX = 220
+# Provenance note — the extension ignores it, humans read it.
+SOURCE = ("derived by build-index.py from --dir/*.md (minus --exclude) — "
+          "do not hand-edit id/path/index_line; desc_en is curated or derived "
+          "and preserved across regenerations; regenerate to update")
 # An index line is any bullet that references `memory/<slug>.md` in backticks
 # (the reference may sit mid-line, and one line may reference several files).
 INDEX_REF = re.compile(r"`memory/([^`/]+\.md)`")
@@ -94,7 +102,20 @@ def main() -> int:
                         "matching entry as index_line (curation context only)")
     p.add_argument("--exclude", action="append", default=[],
                    help="filename or glob to skip (repeatable)")
+    p.add_argument("--no-preserve", action="store_true",
+                   help="ignore desc_en/desc_src in an existing --out file "
+                        "(fresh derived pass over the whole index)")
     args = p.parse_args()
+    preserve = {}
+    if not args.no_preserve and os.path.exists(args.out):
+        try:
+            with open(args.out, encoding="utf-8") as fh:
+                for m in json.load(fh).get("memories", []):
+                    if m.get("desc_en"):
+                        preserve[m["id"]] = (m["desc_en"],
+                                             m.get("desc_src", "curated"))
+        except (OSError, ValueError):
+            pass  # unreadable/corrupt out file: fresh pass
     excluded = set()
     for pat in args.exclude:
         excluded.update(os.path.basename(f) for f in glob.glob(os.path.join(args.dir, pat)))
@@ -109,16 +130,22 @@ def main() -> int:
         entry = {"id": slug, "path": os.path.abspath(f)}
         if slug in index_lines:
             entry["index_line"] = index_lines[slug]
-        entry["desc_en"] = desc
-        entry["desc_src"] = "derived"
+        if slug in preserve:
+            entry["desc_en"], entry["desc_src"] = preserve[slug]
+        else:
+            entry["desc_en"] = desc
+            entry["desc_src"] = "derived"
         memories.append(entry)
     if not memories:
         print(f"no .md files under {args.dir}", file=sys.stderr)
         return 1
     with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump({"memories": memories}, fh, indent=1, ensure_ascii=False)
+        json.dump({"source": SOURCE, "memories": memories},
+                  fh, indent=1, ensure_ascii=False)
     n_il = sum(1 for m in memories if "index_line" in m)
+    n_pr = sum(1 for m in memories if m["desc_src"] != "derived")
     extra = f" ({n_il} with index_line)" if args.index_file else ""
+    extra += f" ({n_pr} desc_en preserved)" if n_pr else ""
     print(f"{len(memories)} entries{extra} → {args.out}")
     return 0
 

@@ -229,14 +229,16 @@ The scorer receives **`desc_en` (the description), never the file contents**.
 
 Good descriptions matter. Garbage descriptions produce garbage priors.
 
-- `scripts/build-index.mjs` (shipped as the `pi-jev-build-index` bin) builds
-  the index with **Node.js only** — it derives a first-draft description from
-  each file's first heading and marks entries `"desc_src": "derived"` for
-  your review.
-- `scripts/build-index.py` is the curation pipeline: same output, plus
-  `--index-file` support that attaches trigger lines from an AGENTS.md-style
-  static index as `index_line` context. (Python is only needed for this
-  optional tool.)
+- `scripts/build-index.py` (shipped as the `pi-jev-build-index` bin) builds
+  the index with **Python 3 stdlib only** — it derives a first-draft
+  description from each file's first heading and marks entries
+  `"desc_src": "derived"` for your review. Curated descriptions survive
+  regeneration: if `--out` already exists, the `desc_en`/`desc_src` of every
+  matching id are preserved (new files get the derived first draft, deleted
+  files drop out; `--no-preserve` forces a fresh pass).
+- `--index-file` attaches trigger lines from an AGENTS.md-style static index
+  as `index_line` context (curation only — the extension ignores it at
+  scoring time).
 - Tip: exclude append-only hypothesis/incident logs from the index
   (`--exclude`) — only durable-fact memories should be scored.
 
@@ -379,8 +381,7 @@ package.json                Pi package manifest (extensions, skills, bin)
 jev-relevance.ts            Pi extension (3 triggers, 2 scorer backends)
 docs/scorer-contract.md     scorer contract + calibration notes
 docs/hero.png               README banner
-scripts/build-index.mjs     memory dir → index JSON (Node stdlib, no Python)
-scripts/build-index.py      index builder + --index-file curation pipeline
+scripts/build-index.py      memory dir → index JSON (Python 3 stdlib, no Node)
 scripts/scorer-openai.py    reference scorer (OpenAI-compatible logprobs)
 examples/memory_index.example.json
 jev/                        the jev skill — the reference local scorer
