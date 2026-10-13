@@ -81,7 +81,7 @@ def derive_desc(text: str) -> str:
 def parse_index_section(text: str) -> list[str]:
     """Bullets of the `### Index` section (wrapped lines regrouped into
     their bullet)."""
-    m = re.search(r"^### Index[^\n]*\n(.*?)(?=^## )", text, re.M | re.S)
+    m = re.search(r"^### Index[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S)
     if not m:
         sys.exit("ERREUR: section '### Index' introuvable dans --index-file")
     lines: list[str] = []

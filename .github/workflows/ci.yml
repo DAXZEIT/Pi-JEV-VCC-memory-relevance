@@ -24,45 +24,90 @@ jobs:
 
       - run: npm run typecheck
 
-      - name: builder — fixture parity vs the Python oracle
+      - name: builder — unified builder (glob + gate, preservation, --check)
         run: |
           set -e
           F=/tmp/idx-fixture
-          mkdir -p "$F"
+          rm -rf "$F" && mkdir -p "$F"
           printf '# Alpha Heading\nbody\n' > "$F/alpha.md"
           printf '> quote first\n# Beta Heading\nbody\n' > "$F/beta-quote.md"
           printf -- '---\n# Gamma Heading\nbody\n' > "$F/gamma-dash.md"
-          printf '# Café 中文 éèê\nbody\n' > "$F/utf8-cjk.md"
-          printf '' > "$F/empty.md"
-          python3 -c "open('$F/longdesc.md','w').write('# ' + 'x'*300 + '\nbody\n')"
-          printf 'no heading here\nplain lines\n' > "$F/noheading.md"
           printf '# Unreferenced\nbody\n' > "$F/zeta.md"
-          cat > "$F/INDEX.md" <<'EOF'
+          IDX=/tmp/idx-index.md
+          cat > "$IDX" <<'EOF'
           # Memory Index
+
+          ### Index
 
           - Deploy runbook, wrapped over
             two lines → `memory/alpha.md`
-          - Two refs in one bullet `memory/longdesc.md`
-            and `memory/utf8-cjk.md` here
-          - Beta → `memory/beta-quote.md`
-
-          # Another Section
-
-          - Gamma `memory/gamma-dash.md` trailing
+          - Two refs in one bullet `memory/gamma-dash.md`
+            and `memory/beta-quote.md` here
           EOF
-          chk() {
-            python3 scripts/build-index.py --dir "$F" --out /tmp/py.json "$@" >/dev/null 2>&1; pe=$?
-            node   scripts/build-index.mjs --dir "$F" --out /tmp/js.json "$@" >/dev/null 2>&1; je=$?
-            [ "$pe" = "$je" ] || { echo "exit mismatch ($pe vs $je) for: $*"; exit 1; }
-            if [ "$pe" = 0 ]; then cmp /tmp/py.json /tmp/js.json || { echo "output mismatch for: $*"; exit 1; }; fi
-            echo "parity OK (exit $pe): $*"
-          }
-          chk
-          chk --index-file "$F/INDEX.md"
-          chk --index-file "$F/INDEX.md" --exclude '[ab]*.md'
-          chk --index-file "$F/INDEX.md" --exclude zeta.md --exclude longdesc.md
-          chk --exclude 'e*.md'
-          chk --exclude 'draft-*'
+          B="python3 scripts/build-index.py"
+
+          # glob mode: whole directory, derived descs, glob source fingerprint
+          $B --dir "$F" --out "$F/glob.json" >/dev/null
+          python3 - "$F" <<'EOF'
+          import json, sys
+          f = json.load(open(sys.argv[1] + "/glob.json"))
+          ids = {m["id"] for m in f["memories"]}
+          assert ids == {"alpha", "beta-quote", "gamma-dash", "zeta"}, ids
+          assert all(m["desc_src"] == "derived" for m in f["memories"])
+          assert all(m["desc_en"] for m in f["memories"])
+          assert f["source"].startswith("derived by build-index.py (glob mode)")
+          print("glob mode OK")
+          EOF
+
+          # gate mode: static index = single source of truth, orphan reported
+          $B --gate --dir "$F" --index-file "$IDX" --out "$F/gate.json" > "$F/gate.log"
+          grep -q "zeta" "$F/gate.log"
+          python3 - "$F" <<'EOF'
+          import json, sys
+          f = json.load(open(sys.argv[1] + "/gate.json"))
+          ids = {m["id"] for m in f["memories"]}
+          assert ids == {"alpha", "beta-quote", "gamma-dash"}, ids
+          assert all(m["desc_src"] == "fr-fallback" for m in f["memories"])  # no --llm in CI
+          assert f["source"].startswith("AGENTS.md section")
+          print("gate mode OK")
+          EOF
+
+          # preservation: a curated desc_en survives a regeneration
+          python3 - "$F" <<'EOF'
+          import json, sys
+          f = json.load(open(sys.argv[1] + "/gate.json"))
+          f["memories"][0]["desc_en"] = "Curated English description"
+          f["memories"][0]["desc_src"] = "curated"
+          json.dump(f, open(sys.argv[1] + "/gate.json", "w"), indent=2)
+          EOF
+          $B --gate --dir "$F" --index-file "$IDX" --out "$F/gate.json" >/dev/null
+          python3 - "$F" <<'EOF'
+          import json, sys
+          f = json.load(open(sys.argv[1] + "/gate.json"))
+          a = {m["id"]: m for m in f["memories"]}
+          assert a["alpha"]["desc_en"] == "Curated English description"
+          assert a["alpha"]["desc_src"] == "curated"
+          print("preservation OK")
+          EOF
+
+          # cross-mode guard: a gate run over a glob-written out file warns
+          $B --gate --dir "$F" --index-file "$IDX" --out "$F/glob.json" 2>&1 \
+            | grep -qi "AVERTISSEMENT"
+
+          # --check: in sync, then a dead ref must fail the run
+          $B --gate --dir "$F" --index-file "$IDX" --out "$F/gate.json" --check
+          python3 - "$F" <<'EOF'
+          import sys
+          p = sys.argv[1] + "/../idx-index.md"
+          t = open(p).read()
+          t = t.replace("### Index", "### Index\n\n- Dead ref → `memory/ghost.md`", 1)
+          open(p, "w").write(t)
+          EOF
+          if $B --gate --dir "$F" --index-file "$IDX" --out "$F/gate.json" --check >/dev/null 2>&1; then
+            echo "FAIL: dead ref not detected"
+            exit 1
+          fi
+          echo "dead ref correctly rejected"
 
       - name: pack hygiene (no pyc, no caches)
         run: |
@@ -88,7 +133,7 @@ jobs:
             const pkg = JSON.parse(readFileSync(root + "/package.json", "utf8"));
             if (pkg.name !== "@daxzeit/pi-jev-vcc-memory-relevance") throw new Error("wrong package name");
             if (!existsSync(root + "/jev-relevance.ts")) throw new Error("extension missing");
-            if (!existsSync(root + "/scripts/build-index.mjs")) throw new Error("index builder missing");
+            if (!existsSync(root + "/scripts/build-index.py")) throw new Error("index builder missing");
             if (pkg.pi?.extensions?.[0] !== "./jev-relevance.ts") throw new Error("Pi extension metadata missing");
             if (pkg.pi?.skills?.[0] !== "./jev") throw new Error("Pi skill metadata missing");
             console.log("clean-room package install OK");
