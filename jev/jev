@@ -44,7 +44,28 @@ CANARIS_DIR = SKILL_DIR / "canaris"
 # Serveur local de scoring. Défaut public = convention llama.cpp (5000) ; JEV_LOCAL_SERVER
 # (même pattern que JEV_GGUF_PATH) pointe le backend réel de la machine — chez dax : le
 # serveur NInfer 18086 (logprobs bornés à top-20 par le moteur, contrat score_local ci-dessous).
-DEFAULT_SERVER = os.environ.get("JEV_LOCAL_SERVER", "http://127.0.0.1:5000")
+def _default_server():
+    """Précédence : flag --server (argparse) > env JEV_LOCAL_SERVER >
+    fichier local ~/.config/jev/server (1 ligne = URL) > convention llama.cpp 5000.
+
+    Le fichier (ajouté 21/10, port backend NInfer) est relancé à chaque appel :
+    un env est porté par le shell de démarrage du process — un shell vieux
+    (tmux, process long-lived) ne voit pas les universaux fish posés après coup,
+    le fichier oui. Chez dax : http://127.0.0.1:18086 (serveur NInfer)."""
+    v = os.environ.get("JEV_LOCAL_SERVER")
+    if v:
+        return v
+    try:
+        with open(os.path.expanduser("~/.config/jev/server"), encoding="utf-8") as f:
+            v = f.readline().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    return "http://127.0.0.1:5000"
+
+
+DEFAULT_SERVER = _default_server()
 DEFAULT_MODEL_LOCAL = "local/Qwen3.8-27B-UD-Q4_K_XL"
 JEV_URL = "https://openrouter.ai/api/alpha/decisions"
 JEV_MODEL = "typesafe/jev-1.13"

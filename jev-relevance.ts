@@ -85,7 +85,10 @@ const LOG = path.join(DIR, "log.jsonl");
 const STATE_F = path.join(DIR, "state.json");
 const QUESTIONS_F = path.join(DIR, "questions.json");
 const JEV_TIMEOUT_S = 120; // scorer budget post-compaction (25 branches ≈ 15-20 s with shared-prefix anchor)
-const COLD_TIMEOUT_S = 45; // scorer budget at cold start — the user is waiting for a first token
+const COLD_TIMEOUT_S = 90; // scorer budget at cold start — the user is waiting for a first token.
+// 45 → 90 (21/10, port NInfer) : 36 questions ≈ 32 s en solo sur NInfer ; sous
+// concurrence (la session pi elle-même sur le même serveur, max-concurrency 2)
+// 45 s était dépassé (exit 2 du CLI) — 90 s = marge ~2.8×.
 const COLD_MIN_PROMPT_CHARS = 30; // shorter = no signal (slash-commands included)
 const COLD_STATE_MAX_CHARS = 2000; // state = prompt head (the anchor carries the rest)
 
