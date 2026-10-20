@@ -41,7 +41,10 @@ TEMPLATE_PATH = SKILL_DIR / "template_qwen38.j2"
 # missing → the template check skips gracefully (jev ask never needs it).
 GGUF_PATH = os.environ.get("JEV_GGUF_PATH")
 CANARIS_DIR = SKILL_DIR / "canaris"
-DEFAULT_SERVER = "http://127.0.0.1:5000"
+# Serveur local de scoring. Défaut public = convention llama.cpp (5000) ; JEV_LOCAL_SERVER
+# (même pattern que JEV_GGUF_PATH) pointe le backend réel de la machine — chez dax : le
+# serveur NInfer 18086 (logprobs bornés à top-20 par le moteur, contrat score_local ci-dessous).
+DEFAULT_SERVER = os.environ.get("JEV_LOCAL_SERVER", "http://127.0.0.1:5000")
 DEFAULT_MODEL_LOCAL = "local/Qwen3.8-27B-UD-Q4_K_XL"
 JEV_URL = "https://openrouter.ai/api/alpha/decisions"
 JEV_MODEL = "typesafe/jev-1.13"
@@ -167,28 +170,27 @@ def score_anchor(server, prefix, deadline):
 
 
 def score_local(server, text, labels, deadline):
-    """POST /v1/completions logprobs=50, 1 token ; softmax float32 sur les 2 labels.
+    """POST /v1/completions logprobs=20, 1 token ; softmax float32 sur les 2 labels.
     Retourne (lp_a, lp_b, passes, latency_s) — a = 1er label ('no'), b = 2e ('yes').
-    cache_prompt=True : bit-neutre (vérifié 01/10, Δlp=0 exact en conditions
-    appariées) mais documente l'intention de réutilisation du préfixe."""
-    payload = {"prompt": text, "max_tokens": 1, "temperature": 0.0, "logprobs": 50,
+
+    Contrat top-20 (2026-10-21, port NInfer) : les 2 labels doivent être dans le
+    top-20 du boundary. Le moteur NInfer borne kLogprobTopK à 20 et refuse
+    logit_bias (l'ancien secours est retiré) ; au-delà du top-20, le label manquant
+    est sous le plancher de bruit du protocole (~1e-4) — le verdict n'en est pas
+    affecté, l'échec est explicite plutôt qu'une approximation biaisée. 20 passe
+    aussi sur llama.cpp (le 50 historique n'apportait rien de plus au-delà de la
+    position de boundary, et le secours logit_bias n'y servait que de filet)."""
+    payload = {"prompt": text, "max_tokens": 1, "temperature": 0.0, "logprobs": 20,
                "cache_prompt": True}
     t0 = time.time()
     resp = http_post(server + "/v1/completions", payload, deadline.guard())
     latency = time.time() - t0
     lp = extract_labels(resp, labels)
-    passes = 1
     if lp is None:
-        # Secours : biais égal sur les 2 labels (l'écart lp_a-lp_b est préservé).
-        payload["logit_bias"] = {labels[0]: 10.0, labels[1]: 10.0}
-        t0 = time.time()
-        resp = http_post(server + "/v1/completions", payload, deadline.guard())
-        latency += time.time() - t0
-        lp = extract_labels(resp, labels)
-        passes = 2
-        if lp is None:
-            raise RuntimeError(f"labels {labels[0]!r}/{labels[1]!r} introuvables dans le top-50 même avec logit_bias égal")
-    return lp[0], lp[1], passes, latency
+        raise RuntimeError(f"labels {labels[0]!r}/{labels[1]!r} introuvables dans le top-20 du "
+                           "boundary — contrat top-20 (voir score_local) ; le score n'est pas "
+                           "calculé plutôt qu'approximé")
+    return lp[0], lp[1], 1, latency
 
 
 def extract_labels(resp, labels):
