@@ -167,11 +167,54 @@ Total wall 19.95 s, exit 0.
 reused the one shared state — exactly the behavior the spec's re-assertion
 rule predicts (c2 and c3 resumed from the state superseded by c1's
 extension). The mechanism diagnosis is confirmed. What F1 does *not* yet
-show: retention under steady-state occupancy — this probe ran on a cold
-pool with no resident load. Before the equal-budget campaign is declared
-unblocked: re-run the probe after the resident session has re-occupied the
-pool, and run the campaign with the session inactive, keeping `/stats`
-before and after.
+show: retention under steady-state occupancy — see the steady-state probe
+below.
+
+## Steady-state probe (16 GiB, resident session active, 04:4x)
+
+The F1 probe ran on a cold pool. The same probe was re-run 25 min later
+with the resident agent session active (~190K-token context in the pool),
+`--max-blocks 5` (the 3 known candidates + 2 **new** candidates sharing the
+same strict prefix); artifacts in
+`/home/dax/.cache/jev-recall/20261021-f1-probe-ss/`.
+
+| Request | Prompt | Reused | Time |
+|---|---|---|---|
+| anchor (same sha `9ec4b049…`) | 27,628 | **0 (cold)** | 15,758 ms |
+| c1–c3 (F1 candidates, 25 min old) | 29,311 / 29,712 / 29,776 | **29,310 / 29,711 / 29,775 (100 %)** | **25.5–25.7 ms** |
+| c4 (new) | 30,907 | **27,627 (89.4 %)** | **2,112 ms** |
+| c5 (new) | 29,412 | **27,627 (94.0 %)** | **1,155 ms** |
+
+Counters (`/stats` pair, Δ during the probe): `host_snapshot_evictions +7`,
+`host_image_restores +4`, `unbacked_node_losses 0`; pool occupancy was
+**99.9 % before the probe** (17.16/17.18 GiB).
+
+Findings:
+
+1. **The 16 GiB pool is image-dominated and refills to ~100 % under a live
+   session.** Since the F1 boot: 49 endpoints + 45 taps = 94 state images ×
+   146.8 MiB ≈ 13.8 GiB, plus 2,799 blocks ≈ 3 GiB — the whole pool in ~25
+   min. Every model request (every agent round-trip) writes a 146.8 MiB
+   endpoint image; a multi-round-trip session churns the pool the same way
+   the 8 GiB case did, just with more headroom before the pain point.
+2. **The 25-min-old anchor state had already been evicted** (the anchor
+   went cold; `host_snapshot_evictions` was already 6 before the probe).
+   Low-value states do not survive a live session's image churn.
+3. **The fork chain still worked at 99.9 % occupancy**: the anchor's cold
+   prefill recreated the endpoint state, c4 (new) hit it (27,627 @ 2.1 s),
+   superseded it, and c5 (new) resumed from the superseded-but-resident
+   state (@ 1.16 s) — while 7 other snapshots were evicted during the same
+   probe. The low-value victims (the session's own superseded round-trip
+   endpoints) absorbed the pressure.
+4. F1's candidate endpoints (with a hit history) survived 25 min of churn
+   and restored in ~25 ms (host → device).
+
+Implication for the campaign: run it with **its own anchor immediately
+before the candidates and the agent session inactive** (the probe's own
+structure). The sequential chain is shown to hold even under churn, but a
+state older than a few minutes of live session traffic is best-effort. If
+the campaign must coexist with an active session — or for margin — 24 GiB
+is the next step (RAM headroom allows it; the pinned cost is the trade-off).
 
 ## 8 GiB (saturated) vs 16 GiB (F1), same anchor workload
 
@@ -194,9 +237,10 @@ one.
 
 1. **Keep :18086 at 16 GiB — DECIDED (user, 2026-10-21, after this
    diagnosis)**; rollback setting remains
-   `scripts/serve_xl_vision_mtp_18086.sh` (8192). 16 GiB pinned cost vs the
-   resident session + campaign fitting comfortably; 8 GiB was the previous
-   production setting.
+   `scripts/serve_xl_vision_mtp_18086.sh` (8192). The steady-state probe
+   showed the pool refills to ~100 % under a live session (image churn,
+   §Steady-state probe); 24 GiB would add headroom if workloads must
+   coexist with the session.
 2. **F2 (code, ninfer-all, separate GO)**: a `--fork-retention N` /
    `retain_resume` flag — do not supersede the resumed-from snapshot when
    sibling continuations are expected; the fork state stays retained and is
@@ -205,8 +249,8 @@ one.
    importance-ordered candidate schedule, and shrinking the 27.6K shared
    context (re-prefilled at every fork = the largest single cost).
 4. **The equal-budget 1K/2K/4K campaign** (plan block 4, ~160 candidates,
-   ~32 min) can be scheduled on F1 — with the steady-state probe (above) as
-   its first gate.
+   ~32 min) can be scheduled on F1 — with **its own anchor + the agent
+   session inactive** as its first gate (steady-state probe, above).
 
 ## Limitations
 
