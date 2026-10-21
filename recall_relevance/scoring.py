@@ -226,6 +226,8 @@ def score_blocks(context: str, blocks: list[dict], *, server: str,
     out = {"schema": "recall_relevance.scoring.v1", "rows": rows,
            "context_sha256": _sha(context), "provenance": {
                "backend": "local", "policy": "v1", "policy_name": "shared_examples_binary",
+               "scorer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+               "metadata_allowlist": "closed-paths-v1",
                "question": QUESTION, "question_version": QUESTION_VERSION,
                "rubric_version": RUBRIC_VERSION,
                "rubric_sha256": _sha(json.dumps(CRITERIA, sort_keys=True)),
