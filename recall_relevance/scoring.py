@@ -33,7 +33,21 @@ _ROOT = Path(__file__).resolve().parents[1]
 _LOAD_LOCK = threading.Lock()
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _COMPLETION = {"max_tokens": 1, "temperature": 0.0, "logprobs": 20, "cache_prompt": True}
-_METADATA = ("usage", "cache", "cache_usage", "timings", "tokens_cached", "tokens_evaluated")
+_USAGE_SCHEMA = {
+    "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
+    "prompt_tokens_details": {"cached_tokens": None, "audio_tokens": None},
+    "completion_tokens_details": {"reasoning_tokens": None, "audio_tokens": None,
+                                  "accepted_prediction_tokens": None, "rejected_prediction_tokens": None},
+}
+_CACHE_SCHEMA = {k: None for k in ("hit", "tokens_reused", "cached_tokens", "tokens_cached",
+                                   "tokens_evaluated", "cache_n", "prompt_n")}
+_METADATA_SCHEMA = {
+    "usage": _USAGE_SCHEMA, "cache": _CACHE_SCHEMA, "cache_usage": _CACHE_SCHEMA,
+    "timings": {k: None for k in ("cache_n", "prompt_n", "prompt_ms", "prompt_per_token_ms",
+                                  "prompt_per_second", "predicted_n", "predicted_ms",
+                                  "predicted_per_token_ms", "predicted_per_second")},
+    "tokens_cached": None, "tokens_evaluated": None,
+}
 
 
 class _BlockError(Exception):
@@ -159,33 +173,28 @@ def _escape(text):
     return text.replace("<", r"\u003c").replace(">", r"\u003e")
 
 
-def _numeric_metadata(value, source_texts):
-    """Keep metric structure/values, not arbitrary text echoed by a backend.
+def _numeric_metadata(value, schema):
+    """Closed metric paths: even numeric metadata keys can echo source fragments.
 
-    Reject source-bearing keys too. Normal numeric usage/cache/timings JSON is
-    preserved exactly; unsafe/non-numeric metadata is explicitly omitted.
+    Unknown paths reject the whole metric object, explicitly flagged as omitted.
+    The allowlist is independent of source text; no arbitrary backend keys leave.
     """
+    if isinstance(schema, dict):
+        if not isinstance(value, dict) or any(k not in schema for k in value):
+            raise ValueError
+        return {k: _numeric_metadata(v, schema[k]) for k, v in value.items()}
     if value is None or isinstance(value, bool) or isinstance(value, int):
         return value
     if isinstance(value, float) and math.isfinite(value):
         return value
-    if isinstance(value, list):
-        return [_numeric_metadata(v, source_texts) for v in value]
-    if isinstance(value, dict):
-        if not all(isinstance(k, str) and k.isascii() and k.replace("_", "").isalnum()
-                   and len(k) <= 64 for k in value):
-            raise ValueError
-        if any(source and source in key for source in source_texts for key in value):
-            raise ValueError
-        return {k: _numeric_metadata(v, source_texts) for k, v in value.items()}
     raise ValueError
 
 
-def _metadata(response, row, source_texts):
-    for name in _METADATA:
+def _metadata(response, row):
+    for name, schema in _METADATA_SCHEMA.items():
         if name in response:
             try:
-                row[name] = _numeric_metadata(response[name], source_texts)
+                row[name] = _numeric_metadata(response[name], schema)
             except (ValueError, RecursionError):
                 row["metadata_omitted"] = True
     # Identify the actual advertised engine without allowing echoed source text.
@@ -321,7 +330,7 @@ def score_blocks(context: str, blocks: list[dict], *, server: str,
                         if len(tokens) > max_prompt_tokens:
                             raise _BlockError("max_prompt_tokens")
                 else:
-                    _metadata(response, row, (context, block["text"]))
+                    _metadata(response, row)
                     try:
                         labels = jev.extract_labels(response, question.output_labels)
                     except (KeyError, IndexError, TypeError, AttributeError):

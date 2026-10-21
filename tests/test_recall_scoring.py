@@ -419,7 +419,7 @@ class RecallScoringTests(unittest.TestCase):
     def test_server_usage_cache_preserved_without_invented_metrics_or_echo(self):
         usage = {"prompt_tokens": 100, "completion_tokens": 1, "total_tokens": 101,
                  "prompt_tokens_details": {"cached_tokens": 80}}
-        cache = {"hit": True, "tokens_reused": 80, "extra": [0, 1, None]}
+        cache = {"hit": True, "tokens_reused": 80}
         timings = {"prompt_ms": 2.5, "predicted_ms": 1.5}
         response = completion(usage=usage, cache=cache, timings=timings, model="MODEL_PRIVATE_STRING")
         response["choices"][0]["text"] = "PRIVATE_COMPLETION"
@@ -445,6 +445,23 @@ class RecallScoringTests(unittest.TestCase):
         self.assertFalse("PRIVATE_ECHO" in json.dumps(safe))
         self.assertNotIn("timings", safe["rows"][0])  # Source echoed even as a numeric metric's key.
         self.assert_coverage(safe, 1, 0, 0, "complete")
+
+    def test_numeric_metadata_keys_cannot_echo_source_fragments(self):
+        secret = "SYNTHETIC_SECRET_FRAGMENT"
+        for metric, value in [("usage", {secret: 1}),
+                              ("usage", {"prompt_tokens_details": {secret: 1}}),
+                              ("cache", {"tokens_reused": {secret: 1}}),
+                              ("timings", {secret: 1}),
+                              ("tokens_cached", {secret: 1})]:
+            with self.subTest(metric=metric, nested=isinstance(next(iter(value.values())), dict)):
+                response = completion(**{metric: value})
+                with FakeBackend(lambda p,b,n: {"body": response} if p.endswith("completions") else None) as backend:
+                    out = scoring.score_blocks("Context containing " + secret + " and more",
+                                               self.blocks(), server=backend.server)
+                self.assert_coverage(out, 1, 0, 0, "complete")
+                self.assertTrue(out["rows"][0]["metadata_omitted"])
+                self.assertNotIn(metric, out["rows"][0])
+                self.assertNotIn(secret, json.dumps(out))
 
     def test_repeatability_input_and_vendor_globals_are_not_mutated(self):
         candidates = self.blocks(2)
