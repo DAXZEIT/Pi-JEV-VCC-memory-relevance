@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "synthetic recall-helpfulness controls, no private transcript",
+  "context": "We are continuing an offline prototype that ranks removed conversation blocks to help an agent resume its current task. Extraction exists. We now need to make exact source consultation work for thoughts, choose a safe prompt layout for the scorer, and preserve the user authorization boundary. We have not activated any production hook.",
+  "blocks": [
+    {
+      "id": "synthetic-scope",
+      "refs": [1],
+      "text": "Earlier user constraint: the GO covers only offline prototype blocks 0 to 3. Do not activate a post-compaction hook, restart or reconfigure the server, publish the repository, or send transcripts to an external provider. Integration requires a later explicit GO."
+    },
+    {
+      "id": "synthetic-correction",
+      "refs": [2],
+      "text": "Correction from source inspection: vcc_recall expand returns text, not raw assistant thoughts. A reference to the message therefore does not prove thoughts are consultable. Provide a distinct private-manifest consultation command that verifies hashes and returns exact source spans; otherwise exclude thoughts and count the omission."
+    },
+    {
+      "id": "synthetic-rejected-rationale",
+      "refs": [3],
+      "text": "We rejected putting each candidate into the question description: the existing JEV policy preannounces question instructions before the shared state, so this makes the prefix vary before the current context. Keep the question fixed and place current_context before earlier_block in the state. This preserves the existing protocol instead of changing its vendor template."
+    },
+    {
+      "id": "synthetic-irrelevant",
+      "refs": [4],
+      "text": "An unrelated conversation discussed a soup recipe with carrots, leeks and potatoes. The vegetables were chopped finely and simmered for thirty minutes. No project, authorization, source consultation, model serving or scoring decision was discussed."
+    }
+  ],
+  "frozen_expectation": {
+    "rule": "each of the first three scores exceeds the unrelated fourth score",
+    "absolute_probability_threshold": null,
+    "interpretation": "directional smoke only, not calibrated utility or general retrieval quality"
+  }
+}

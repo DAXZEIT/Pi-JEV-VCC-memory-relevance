@@ -100,7 +100,8 @@ def score_command(args):
 def consult_command(args):
     manifest=read_json(args.manifest)
     result=consult(manifest,args.block)
-    print(json.dumps(result,ensure_ascii=False,indent=2))
+    # Escape metadata too: forged IDs/origin fields must not print active markers.
+    print(json.dumps(result,ensure_ascii=False,indent=2).replace('<',r'\u003c').replace('>',r'\u003e'))
 
 
 def main(argv=None):

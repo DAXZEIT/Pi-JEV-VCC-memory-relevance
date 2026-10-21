@@ -405,6 +405,25 @@ jev/NOTES.md                design notes + measured proof
 
 ---
 
+## Offline recall-relevance research prototype
+
+A separate, **source-checkout-only** prototype ranks conversation blocks removed
+by a VCC compaction, rather than descriptions of long-term memory files.
+It uses private canonical snapshots and an explicitly selected loopback scorer.
+It does **not** activate a Pi hook, replace the existing memory scorer or inject
+source passages. It is not included as a new installed Pi tool.
+
+- [Usage and privacy boundaries](docs/recall-relevance/USAGE.md)
+- [Canonical source and exact-consultation contract](docs/recall-relevance/CONTRACT.md)
+- [2026-10-21 results and outstanding gates](docs/recall-relevance/RESULTS-2026-10-21.md)
+
+**Current result:** extraction and scorer functionality are demonstrated, but
+real full-zone scoring is too incomplete under the tested budgets to select a
+block size or claim retrieval quality. Durable shared-prefix reuse remains an
+open issue on the measured active runtime. No production activation is implied.
+
+---
+
 ## License
 
 MIT — see LICENSE, **except `jev/protocol/`**, which is vendored
