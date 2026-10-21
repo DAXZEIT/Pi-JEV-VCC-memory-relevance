@@ -171,9 +171,10 @@ one.
 
 ## Open decisions and levers
 
-1. **Keep :18086 at 16 GiB (current state) or roll back to 8192**
-   (`scripts/serve_xl_vision_mtp_18086.sh`). 16 GiB pinned cost vs the
-   resident session + campaign fitting comfortably; 8 GiB is the previous
+1. **Keep :18086 at 16 GiB — DECIDED (user, 2026-10-21, after this
+   diagnosis)**; rollback setting remains
+   `scripts/serve_xl_vision_mtp_18086.sh` (8192). 16 GiB pinned cost vs the
+   resident session + campaign fitting comfortably; 8 GiB was the previous
    production setting.
 2. **F2 (code, ninfer-all, separate GO)**: a `--fork-retention N` /
    `retain_resume` flag — do not supersede the resumed-from snapshot when
