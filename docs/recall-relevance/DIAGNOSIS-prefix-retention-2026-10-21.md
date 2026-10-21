@@ -32,23 +32,31 @@ From the debug log `ninfer-xl-compare/logs/serve-xl-18086-20261021.log`
 
 | Window | Requests | Prompt (tokens) | Reused | TTFT |
 |---|---|---|---|---|
-| smoke 2K | #693–695 | 29,311 / 29,712 / 29,776 | 0 % each | 16.5–17.0 s |
-| anchor probe #1 | #697 → #698 → #699 | 6,979 cold → 9,693 → 10,414 | 0 → **95.4 %** → 0 % | 7.4 s / **0.24 s** / 16.6 s |
-| anchor resubmits | #729–736 (×8) | 27,628 each | **100 %** | **37 ms** |
-| new candidate | **#737** | 30,907 | **27,627 (89.4 %)** | **2.09 s** |
-| next new candidates | #738–740 | 30,907 (new suffixes) | **0 %** | 16.5–16.6 s |
+| smoke 2K | #693–695 | 29,311 / 29,712 / 29,776 | 0 % each | 16.6–17.1 s |
+| anchor probe #1 | #697 → #698 → #699 | 6,979 cold → 7,314 → 7,348 | 0 → **95.4 %** → 0 % | 3.8 s / **244 ms** / 4.0 s |
+| resubmits, round 1 (03:16:30) | #729–732 | 27,628 / 29,311 / 29,712 / 29,776 | 55.6 % / **100 %** ×3 | 7.5 s / **37–38 ms** |
+| resubmits, round 2 (03:17:11) | #733–736 | same 4 prompts | **100 %** ×4 | **286 ms / 37–42 ms** |
+| new candidate | **#737** (03:17:13) | 30,907 | **27,627 (89.4 %)** | **2.1 s** |
+| next new candidates | #738–740 | 29,412 / 29,797 / 28,522 | **0 %** | 16.6–16.9 s |
+| matrix (03:21–03:23) | #742 / #743 · #745 / #746 | 29,040 / 28,311 · 31,322 / 32,772 | 12,800 (44.1 %) / 0 · 21,760 (69.5 %) / 0 | 9.9 / 16.0 · 5.9 / 19.0 s |
 
-The same pattern appears earlier (01:28, ANLI bench zone): req#493 reused
-91.1 % (49,852/54,706), then req#494–504 (51.3K tokens) all 0 % at ~18.7 s.
+The same pattern appears earlier (01:28, ANLI bench, ~3.7K-token prompts):
+req#493 reused 91.1 % (3,393/3,725) in 238 ms, then req#494–504 all 0 % at
+~2.0 s.
 
 Two properties isolate the mechanism:
 
-1. Identical-prompt resubmissions (no extension) keep hitting at 37 ms —
-   including *after* the first divergent candidate already superseded the
-   state. Time and repetition alone do not kill the state.
-2. The state serves exactly the **first** divergent continuation, then
-   subsequent divergent candidates see 0 % — even with a single client and
-   no concurrent traffic (this agent's pi session was verifiably idle
+1. Identical-prompt resubmissions (no extension) keep hitting while the
+   corresponding state/endpoint is resident — two rounds ~40 s apart, under
+   a saturated pool, each request at ~1 new token (no allocation pressure).
+   Time and repetition alone do not kill the state.
+2. The shared state serves the **first new candidate that prefills beyond
+   it** (probe #1: 697→698; probe #2: 729→737); subsequent new candidates
+   see 0 % (699; 738–740). In probe #1 the state was gone within 4 s of the
+   first divergent completion (698 wrote only ~336 new tokens); in probe #2
+   it survived two zero-allocation resubmit rounds (~40 s) and died with
+   #737's 3,280-token prefill. All of this with a single client and no
+   concurrent traffic (this agent's pi session was verifiably idle
    03:05–03:30; the 01:28 occurrence happened during this session's own
    bench runs, but the 03:17 occurrence rules out interference).
 
@@ -93,15 +101,23 @@ The two rules that decide retention (spec §9.3–9.5, confirmed in
    can drop a node's last copy; §9.4 then deletes the subtree **with its
    anchored snapshots** (`unbacked_node_losses` counter).
 
-On a saturated pool, each candidate's own release (endpoint image write +
-path write-through) triggers an eviction; the superseded fork state is the
-first victim — so each candidate's completion kills the state the next
-candidate needs. On a non-saturated pool, no eviction fires between
-resumes, `note_hit` keeps re-asserting the shared state, and the chain
-continues. The single-consumer signature is an **eviction artifact**, not
-an intrinsic consume-on-use.
+On a saturated pool, the prefill allocation of the **first new candidate
+beyond the shared state** evicts it: the allocation is satisfied by
+evicting something, and the superseded fork state is the first target —
+any size suffices (336 new tokens in probe #1; 3,280 in probe #2), and the
+state is gone before the next new candidate arrives. Zero-allocation
+requests (100 % resubmits, ~1 new token) never trigger an eviction, which
+is why the state serves repeated resubmissions for ~40 s. On a
+non-saturated pool, no eviction fires between resumes, `note_hit`
+re-asserts the shared state on every resume, and the chain continues. The
+signature is an **eviction artifact**, not an intrinsic consume-on-use.
 
 ## Live pool state of the 8 GiB instance (pre-F1, `/stats`)
+
+Snapshot taken live via `GET /stats` on the running instance shortly before
+the F1 swap (this session, 2026-10-21 ~04:07); not persisted as an
+artifact — the F1 stats pair below brackets the 16 GiB side, and the
+request-level evidence above stands independently of these counters.
 
 | Counter | Value |
 |---|---|
@@ -149,8 +165,13 @@ Total wall 19.95 s, exit 0.
 
 **Conclusion**: with pressure removed, all three divergent continuations
 reused the one shared state — exactly the behavior the spec's re-assertion
-rule predicts. The diagnosis is confirmed; the equal-budget campaign gate
-is unblocked on the F1 configuration.
+rule predicts (c2 and c3 resumed from the state superseded by c1's
+extension). The mechanism diagnosis is confirmed. What F1 does *not* yet
+show: retention under steady-state occupancy — this probe ran on a cold
+pool with no resident load. Before the equal-budget campaign is declared
+unblocked: re-run the probe after the resident session has re-occupied the
+pool, and run the campaign with the session inactive, keeping `/stats`
+before and after.
 
 ## 8 GiB (saturated) vs 16 GiB (F1), same anchor workload
 
@@ -184,7 +205,8 @@ one.
    importance-ordered candidate schedule, and shrinking the 27.6K shared
    context (re-prefilled at every fork = the largest single cost).
 4. **The equal-budget 1K/2K/4K campaign** (plan block 4, ~160 candidates,
-   ~32 min) can now be scheduled on F1.
+   ~32 min) can be scheduled on F1 — with the steady-state probe (above) as
+   its first gate.
 
 ## Limitations
 
@@ -201,6 +223,12 @@ one.
   a side output of the probe, not an evaluation.
 
 ## Provenance and artifacts
+
+- Reviewed 2026-10-21 by an independent read-only sub-agent reviewer
+  (gpt-5.6-luna, session `1021-043315-7811`): the mechanism claims checked
+  against spec/code/log; the symptom-table token counts and the 01:28 line
+  were transcription errors and are corrected in the follow-up commit; the
+  conclusion was toned down to match the Limitations section.
 
 - F1 probe output + `/stats` pair: `/home/dax/.cache/jev-recall/20261021-f1-probe/`
   (0700; the probe persists no prompts or source text by contract).
