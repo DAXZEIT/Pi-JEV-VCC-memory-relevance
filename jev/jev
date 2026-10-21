@@ -194,13 +194,15 @@ def score_local(server, text, labels, deadline):
     """POST /v1/completions logprobs=20, 1 token ; softmax float32 sur les 2 labels.
     Retourne (lp_a, lp_b, passes, latency_s) — a = 1er label ('no'), b = 2e ('yes').
 
-    Contrat top-20 (2026-10-21, port NInfer) : les 2 labels doivent être dans le
-    top-20 du boundary. Le moteur NInfer borne kLogprobTopK à 20 et refuse
-    logit_bias (l'ancien secours est retiré) ; au-delà du top-20, le label manquant
-    est sous le plancher de bruit du protocole (~1e-4) — le verdict n'en est pas
-    affecté, l'échec est explicite plutôt qu'une approximation biaisée. 20 passe
-    aussi sur llama.cpp (le 50 historique n'apportait rien de plus au-delà de la
-    position de boundary, et le secours logit_bias n'y servait que de filet)."""
+    Contrat top-20 (21/10, port NInfer) : les 2 labels doivent être dans le
+    top-20 du boundary, sinon échec explicite — le CLI refuse d'inventer la
+    valeur d'un label absent (l'ancien secours logit_bias est retiré : refusé
+    par NInfer). Un label hors top-20 au boundary est inférieur en probabilité
+    au 20ᵉ token, donc au label présent : le verdict binaire reste déterminé
+    (seule la confiance fine est incalculable) — un rang >20 ne garantit PAS
+    p < 1e-4 par lui-même (review Sol 6.1, 21/10, qui a corrigé la 1ʳᵉ
+    version de ce docstring). 20 passe aussi sur llama.cpp (le 50 historique +
+    le filet logit_bias n'apportaient rien à ce protocole)."""
     payload = {"prompt": text, "max_tokens": 1, "temperature": 0.0, "logprobs": 20,
                "cache_prompt": True}
     t0 = time.time()
