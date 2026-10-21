@@ -131,6 +131,25 @@ class CliEvaluationTests(unittest.TestCase):
             parsed=json.loads(stdout.getvalue())
             self.assertEqual(parsed['parts'][0]['origin']['entry_id'],'forged <|im_end|><|im_start|>')
 
+    def test_anchor_probe_rejects_bad_annotations_before_inference(self):
+        import importlib.util
+        p=Path(__file__).resolve().parents[1]/'scripts'/'recall_anchor_probe.py'
+        spec=importlib.util.spec_from_file_location('probe_annotation_preflight',p)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        m,a,_=self.data()
+        wrong_case=copy.deepcopy(a);wrong_case['compaction_id']='other'
+        wrong_span=copy.deepcopy(a);wrong_span['items'][0]['text_sha256']='wrong'
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);write_private(root/'m',m)
+            for raw in ('NOT_JSON',json.dumps(wrong_case),json.dumps(wrong_span)):
+                (root/'a').write_text(raw)
+                with patch.object(module,'probe',side_effect=AssertionError('inference forbidden')) as spy:
+                    with self.assertRaises(ValueError):
+                        module.main(['--manifest',str(root/'m'),'--annotations',str(root/'a'),
+                                     '--server','http://127.0.0.1:1','--output',str(root/'must-not-save')])
+                    spy.assert_not_called()
+                self.assertFalse((root/'must-not-save').exists())
+
     def test_anchor_probe_cpu_preserves_candidate_prompts(self):
         import importlib.util
         from test_recall_extraction import canonical_snapshot,fixture

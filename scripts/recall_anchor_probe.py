@@ -17,6 +17,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from recall_relevance.cli import schedule, write_private
 from recall_relevance.extraction import consult, digest
+from recall_relevance.evaluation import evaluate
 from recall_relevance import scoring
 
 
@@ -62,20 +63,22 @@ def probe(manifest, *, server, timeout_s=90, max_blocks=3, max_prompt_tokens=491
     return result
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest',required=True);parser.add_argument('--annotations',required=True)
     parser.add_argument('--server',required=True);parser.add_argument('--output',required=True)
     parser.add_argument('--timeout',type=float,default=90);parser.add_argument('--max-blocks',type=int,default=3)
     parser.add_argument('--max-prompt-tokens',type=int,default=49152)
-    args=parser.parse_args()
+    args=parser.parse_args(argv)
     if not 0<args.timeout<=120 or not 2<=args.max_blocks<=16 or args.max_prompt_tokens<=0:
         parser.error('probe budget: timeout<=120, 2..16 blocks, positive prompt ceiling')
     output=Path(args.output)
     if output.exists() or output.is_symlink() or not output.parent.is_dir() or output.parent.stat().st_mode&0o077:
         parser.error('output must be new, in existing private directory')
     mp=Path(args.manifest);ap=Path(args.annotations);mraw=mp.read_text();araw=ap.read_text()
-    result=probe(json.loads(mraw),server=args.server,timeout_s=args.timeout,
+    manifest=json.loads(mraw);annotations=json.loads(araw)
+    evaluate(manifest,{'rows':[]},annotations)
+    result=probe(manifest,server=args.server,timeout_s=args.timeout,
                  max_blocks=args.max_blocks,max_prompt_tokens=args.max_prompt_tokens)
     if mp.read_text()!=mraw or ap.read_text()!=araw:raise ValueError('probe inputs changed')
     result['manifest_sha256']=digest(mraw);result['annotations_sha256']=digest(araw)
