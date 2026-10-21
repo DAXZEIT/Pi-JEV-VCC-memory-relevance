@@ -5,6 +5,11 @@ replacement.** See [source contract](CONTRACT.md) and
 [measured limitations](RESULTS-2026-10-21.md) before running a real campaign.
 This prototype has not passed its full-zone quality/latency gate.
 
+The 2026-10-21 shared-prefix retention failure on NInfer (saturated 8 GiB
+host pool evicting fork states between divergent candidates) is documented
+in [DIAGNOSIS-prefix-retention-2026-10-21.md](DIAGNOSIS-prefix-retention-2026-10-21.md).
+The equal-budget campaign should run with `--host-cache-mib >= 16384`.
+
 ## Requirements
 
 - Run commands from the source repository root, with Python 3.10+ and the
